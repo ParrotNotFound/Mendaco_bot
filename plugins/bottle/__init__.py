@@ -1,17 +1,24 @@
 from nonebot import get_plugin_config
 from nonebot.plugin import PluginMetadata
+import random
+import time
+import json
+from nonebot import on_command
+from nonebot.adapters.onebot.v11 import Message, MessageSegment, Event
+from nonebot.params import CommandArg
 
 from .config import Config
 
 __plugin_meta__ = PluginMetadata(
     name="bottle",
-    description="",
-    usage="",
+    description="漂流瓶插件",
+    usage="投掷漂流瓶: /throw 内容\n捡漂流瓶: /bottle\n评论漂流瓶: /comment 瓶号 评论",
     config=Config,
 )
 
 config = get_plugin_config(Config)
 
+# 导入其他插件
 from nonebot import require
 require("plugins.file_edit")
 from plugins.file_edit import (
@@ -19,45 +26,28 @@ from plugins.file_edit import (
     write_csv_file,
     safe_path,
     append_csv_rows,
-    plugin_dir
+    plugin_dir,
+    read_file,
+    write_file
 )
 
-require("plugins.maimaidx_music")
-from plugins.maimaidx_music import total_list
-require("plugins.image")
-from plugins.image import text_to_image2, image_to_base64
-config = get_plugin_config(Config)
-
-from pathlib import Path
-import random
-import time
-import aiohttp
-from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Message, MessageSegment, Event
-from nonebot.params import CommandArg
-
 # 常量定义
-BOTTLE_ROOT = plugin_dir / "bottles"
-BOTTLE_DATA = {
-    "num": BOTTLE_ROOT / "num.txt",
-    "text": BOTTLE_ROOT / "text",
-    "pic": BOTTLE_ROOT / "pic",
-    "user": BOTTLE_ROOT / "user"
+BOTTLE_ROOT = "bottles"
+BOTTLE_DIRS = {
+    "text": f"{BOTTLE_ROOT}/text",
+    "pic": f"{BOTTLE_ROOT}/pic", 
+    "user": f"{BOTTLE_ROOT}/user"
 }
-
-# 初始化目录
-for d in BOTTLE_DATA.values():
-    if isinstance(d, Path):
-        d.mkdir(parents=True, exist_ok=True)
+BOTTLE_FILES = {
+    "num": f"{BOTTLE_ROOT}/num"
+}
 
 def get_user_nickname(event: Event) -> str:
     """从事件中获取用户昵称（QQ昵称）"""
     try:
-        # 尝试从事件中获取用户昵称
         if hasattr(event, 'sender') and hasattr(event.sender, 'nickname'):
             return event.sender.nickname
         elif hasattr(event, 'get_user_id'):
-            # 如果没有昵称，返回QQ号
             return event.get_user_id()
         else:
             return "未知用户"
@@ -71,36 +61,68 @@ def parse_image_urls(message: Message) -> list:
         if seg.type == "image" and "url" in seg.data
     ]
 
-async def update_bottle_counter() -> int:
-    """更新并获取漂流瓶编号"""
-    counter_file = BOTTLE_DATA["num"]
-    
+def read_counter_file() -> int:
+    """读取计数器文件"""
+    counter_file = BOTTLE_FILES["num"] + ".csv"
     try:
-        content = await read_csv_file(counter_file)
-        num = int(content[0][0]) if content else 0
-    except FileNotFoundError:
-        num = 0
-    
-    num += 1
-    await write_csv_file(counter_file, [[str(num)]])
-    return num
+        result = read_csv_file(counter_file)
+        if isinstance(result, str):  # 错误信息
+            print(f"[DEBUG] 读取计数器文件失败: {result}")
+            return 0
+        if result and result[0]:
+            return int(result[0][0])
+    except Exception as e:
+        print(f"[DEBUG] 读取计数器文件异常: {e}")
+    return 0
 
-async def save_bottle_data(num: int, user_id: str, nickname: str, text: str, images: list):
-    """保存漂流瓶数据（包含QQ昵称）"""
-    # 保存文本
-    text_file = BOTTLE_DATA["text"] / f"{num}.txt"
-    await write_csv_file(text_file, [[text]])
+def write_counter_file(num: int) -> bool:
+    """写入计数器文件"""
+    counter_file = BOTTLE_FILES["num"]
+    result = write_csv_file(counter_file, [[str(num)]])
+    if result is not True:
+        print(f"[DEBUG] 写入计数器文件失败: {result}")
+    return result is True
+
+def update_bottle_counter() -> int:
+    """更新并获取漂流瓶编号"""
+    num = read_counter_file()
+    num += 1
+    if write_counter_file(num):
+        return num
+    else:
+        raise Exception("写入计数器文件失败")
+
+def save_bottle_data(num: int, user_id: str, nickname: str, text: str, images: list):
+    """保存漂流瓶数据，使用纯文本和JSON格式"""
+    # 保存文本（使用纯文本文件，避免逗号问题）
+    if text.strip():
+        text_file = f"{BOTTLE_DIRS['text']}/{num}.txt"
+        try:
+            write_file(text_file, text)
+        except Exception as e:
+            raise Exception(f"保存文本失败: {e}")
     
-    # 保存图片链接
+    # 保存图片链接（使用JSON格式）
     if images:
-        pic_file = BOTTLE_DATA["pic"] / f"{num}.csv"
-        await write_csv_file(pic_file, [[url] for url in images])
+        pic_file = f"{BOTTLE_DIRS['pic']}/{num}.json"
+        try:
+            # 将图片链接列表保存为JSON
+            write_file(pic_file, json.dumps(images, ensure_ascii=False, indent=2))
+        except Exception as e:
+            raise Exception(f"保存图片失败: {e}")
     
-    # 保存用户信息（QQ号、昵称、时间戳）
-    user_file = BOTTLE_DATA["user"] / f"{num}.csv"
-    await write_csv_file(user_file, [
-        [user_id, nickname, str(int(time.time()))]
-    ])
+    # 保存用户信息（使用JSON格式）
+    user_file = f"{BOTTLE_DIRS['user']}/{num}.json"
+    user_data = {
+        "user_id": user_id,
+        "user_nickname": nickname,
+        "timestamp": int(time.time()),
+        "comments": []  # 初始评论为空列表
+    }
+    try:
+        write_file(user_file, json.dumps(user_data, ensure_ascii=False, indent=2))
+    except Exception as e:
+        raise Exception(f"保存用户信息失败: {e}")
 
 throw_bottle = on_command('throw')
 
@@ -110,79 +132,86 @@ async def handle_throw(event: Event, message: Message = CommandArg()):
     text = message.extract_plain_text().strip()
     images = parse_image_urls(event.message)
     
-    # 获取用户昵称（QQ昵称）
+    if not text and not images:
+        await throw_bottle.finish("漂流瓶内容不能为空，请添加文字或图片")
+    
     nickname = get_user_nickname(event)
     
-    # 更新漂流瓶计数器
     try:
-        num = await update_bottle_counter()
+        num = update_bottle_counter()
     except Exception as e:
         await throw_bottle.finish(f"更新漂流瓶编号失败：{str(e)}")
     
-    # 保存数据（包含昵称）
     try:
-        await save_bottle_data(num, user_id, nickname, text, images)
+        save_bottle_data(num, user_id, nickname, text, images)
     except Exception as e:
         await throw_bottle.finish(f"保存数据失败：{str(e)}")
     
     # 构建响应消息
-    msg = MessageSegment.text(
-        f"{nickname}的漂流瓶已投掷！漂流瓶id: {num}\n内容：{text}"
-    )
+    if text and images:
+        msg_content = f"包含文字和图片的漂流瓶"
+    elif text:
+        msg_content = f"文字漂流瓶"
+    elif images:
+        msg_content = f"图片漂流瓶（{len(images)}张）"
+    
+    msg = MessageSegment.text(f"{nickname}的{msg_content}已投掷！漂流瓶id: {num}\n")
+    if text:
+        msg += MessageSegment.text(f"内容：{text}\n")
+    
     if images:
         msg += MessageSegment.image(images[0])
     
     await throw_bottle.send(msg)
 
-async def load_bottle_data(num: int) -> dict:
-    """加载漂流瓶数据（包含QQ昵称）"""
+def load_bottle_data(num: int) -> dict:
+    """加载漂流瓶数据，使用纯文本和JSON格式"""
     data = {}
+    print(f"[DEBUG] 开始加载漂流瓶 {num} 的数据")
     
-    # 加载文本
-    text_file = BOTTLE_DATA["text"] / f"{num}.txt"
+    # 加载文本（纯文本文件）
+    text_file = f"{BOTTLE_DIRS['text']}/{num}.txt"
     try:
-        text_data = await read_csv_file(text_file)
-        data["text"] = text_data[0][0] if text_data else ""
-    except:
+        data["text"] = read_file(text_file)
+        print(f"[DEBUG] 漂流瓶 {num} 文本加载成功: {data['text'][:50]}...")
+    except Exception as e:
+        print(f"[DEBUG] 漂流瓶 {num} 文本读取失败: {e}")
         data["text"] = ""
     
-    # 加载图片
-    pic_file = BOTTLE_DATA["pic"] / f"{num}.csv"
+    # 加载图片（JSON格式）
+    pic_file = f"{BOTTLE_DIRS['pic']}/{num}.json"
     data["images"] = []
     try:
-        pic_data = await read_csv_file(pic_file)
-        if pic_data and not isinstance(pic_data, str):
-            data["images"] = [row[0] for row in pic_data]
-    except:
-        pass
+        images_json = read_file(pic_file)
+        data["images"] = json.loads(images_json)
+        print(f"[DEBUG] 漂流瓶 {num} 加载了 {len(data['images'])} 张图片")
+    except Exception as e:
+        print(f"[DEBUG] 漂流瓶 {num} 图片读取失败: {e}")
     
-    # 加载用户信息
-    user_file = BOTTLE_DATA["user"] / f"{num}.csv"
+    # 加载用户信息（JSON格式）
+    user_file = f"{BOTTLE_DIRS['user']}/{num}.json"
     data["user_id"] = ""
     data["user_nickname"] = ""
     data["timestamp"] = ""
     data["comments"] = []
     
     try:
-        user_data = await read_csv_file(user_file)
-        if user_data and not isinstance(user_data, str):
-            if len(user_data) > 0:
-                # 第一行是发布者信息
-                if len(user_data[0]) >= 3:  # 新格式：QQ号, 昵称, 时间戳
-                    data["user_id"] = user_data[0][0]
-                    data["user_nickname"] = user_data[0][1]
-                    data["timestamp"] = user_data[0][2]
-                elif len(user_data[0]) >= 1:  # 旧格式兼容
-                    data["user_id"] = user_data[0][0]
-                    data["user_nickname"] = data["user_id"]  # 如果没有昵称，使用QQ号
-                    if len(user_data[0]) >= 2:
-                        data["timestamp"] = user_data[0][1]
-                
-                # 剩余行是评论
-                if len(user_data) > 1:
-                    data["comments"] = user_data[1:]
-    except:
-        pass
+        user_json = read_file(user_file)
+        user_data = json.loads(user_json)
+        data["user_id"] = user_data.get("user_id", "")
+        data["user_nickname"] = user_data.get("user_nickname", "")
+        data["timestamp"] = user_data.get("timestamp", "")
+        data["comments"] = user_data.get("comments", [])
+        print(f"[DEBUG] 漂流瓶 {num} 用户信息加载成功: {data['user_nickname']}")
+        print(f"[DEBUG] 漂流瓶 {num} 有 {len(data['comments'])} 条评论")
+    except Exception as e:
+        print(f"[DEBUG] 漂流瓶 {num} 用户信息读取失败: {e}")
+    
+    # 检查漂流瓶是否有效
+    if not data["text"] and not data["images"]:
+        print(f"[DEBUG] 漂流瓶 {num} 无效：文本和图片都为空")
+    else:
+        print(f"[DEBUG] 漂流瓶 {num} 加载完成，有效")
     
     return data
 
@@ -190,94 +219,139 @@ pick_bottle = on_command('bottle')
 
 @pick_bottle.handle()
 async def handle_pick(event: Event):
-    # 获取漂流瓶总数
     try:
-        counter = await read_csv_file(BOTTLE_DATA["num"])
-        max_num = int(counter[0][0]) if counter else 0
-    except Exception:
-        await pick_bottle.finish("漂流瓶数据加载失败")
+        max_num = read_counter_file()
+        print(f"[DEBUG] 当前最大漂流瓶编号: {max_num}")
+    except Exception as e:
+        await pick_bottle.finish(f"漂流瓶数据加载失败: {str(e)}")
     
     if max_num == 0:
         await pick_bottle.finish("现在还没有漂流瓶呢")
     
-    # 随机尝试获取有效漂流瓶
-    for _ in range(3):
-        num = random.randint(1, max_num)
-        try:
-            data = await load_bottle_data(num)
-            if not data or not data.get("text"):
-                continue
-        except Exception:
-            continue
-        
-        # 获取发布者信息（使用保存的QQ昵称）
-        publisher_name = data.get("user_nickname", data.get("user_id", "未知用户"))
-        
-        # 构建消息
-        msg = MessageSegment.text(
-            f"捡到了来自 {publisher_name} 的漂流瓶！\n"
-            f"ID: {num}\n内容：{data['text']}\n"
-        )
-        
-        # 添加图片
-        for img_url in data.get("images", [])[:3]:  # 最多显示3张图片
-            msg += MessageSegment.image(img_url)
-        
-        # 添加评论
-        comments = data.get("comments", [])
-        if comments:
-            msg += MessageSegment.text("\n\n近期评论：")
-            for comment in comments[-3:]:  # 显示最近3条评论
-                if len(comment) >= 3:  # 新格式：QQ号, 昵称, 评论
-                    commenter_name = comment[1] if comment[1] else comment[0]
-                    comment_text = comment[2] if len(comment) > 2 else ""
-                elif len(comment) >= 2:  # 旧格式：QQ号, 评论
-                    commenter_name = comment[0]
-                    comment_text = comment[1] if len(comment) > 1 else ""
-                else:
-                    continue
-                
-                msg += MessageSegment.text(f"\n{commenter_name}：{comment_text}")
-        else:
-            msg += MessageSegment.text("\n发送 /comment 添加评论")
-        
-        await pick_bottle.send(msg)
-        return
+    tried_nums = set()
+    found_valid = False
     
-    await pick_bottle.finish("暂时没有可捡的漂流瓶")
+    # 增加尝试次数
+    for attempt in range(min(10, max_num * 2)):
+        num = random.randint(1, max_num)
+        if num in tried_nums:
+            continue
+        tried_nums.add(num)
+        
+        print(f"[DEBUG] 尝试捡取漂流瓶 {num} (第{attempt+1}次尝试)")
+        
+        try:
+            data = load_bottle_data(num)
+            # 漂流瓶有效条件：有文本或有图片
+            if not data.get("text") and not data.get("images"):
+                print(f"[DEBUG] 漂流瓶 {num} 无效，跳过")
+                continue
+                
+            found_valid = True
+            publisher_name = data.get("user_nickname", data.get("user_id", "未知用户"))
+            
+            # 构建消息
+            msg = MessageSegment.text(f"捡到了来自 {publisher_name} 的漂流瓶！\n")
+            msg += MessageSegment.text(f"ID: {num}\n")
+            
+            if data.get("text"):
+                msg += MessageSegment.text(f"内容：{data['text']}\n")
+            
+            # 添加图片
+            for img_url in data.get("images", [])[:3]:
+                msg += MessageSegment.image(img_url)
+            
+            # 添加评论
+            comments = data.get("comments", [])
+            if comments:
+                msg += MessageSegment.text("\n\n近期评论：")
+                for comment in comments[-3:]:  # 显示最近3条评论
+                    # 评论现在是一个字典
+                    if isinstance(comment, dict):
+                        commenter_name = comment.get("nickname", comment.get("user_id", "未知用户"))
+                        comment_text = comment.get("comment", "")
+                    else:
+                        # 兼容旧格式（如果是列表）
+                        if len(comment) >= 3:
+                            commenter_name = comment[1] if comment[1] else comment[0]
+                            comment_text = comment[2] if len(comment) > 2 else ""
+                        elif len(comment) >= 2:
+                            commenter_name = comment[0]
+                            comment_text = comment[1] if len(comment) > 1 else ""
+                        else:
+                            continue
+                    
+                    msg += MessageSegment.text(f"\n{commenter_name}：{comment_text}")
+            else:
+                msg += MessageSegment.text("\n发送 /comment 添加评论")
+            
+            await pick_bottle.send(msg)
+            print(f"[DEBUG] 成功捡取漂流瓶 {num}")
+            return
+            
+        except Exception as e:
+            print(f"[DEBUG] 捡取漂流瓶 {num} 时发生异常: {e}")
+            continue
+    
+    if not found_valid:
+        print(f"[DEBUG] 尝试了 {len(tried_nums)} 个漂流瓶，都无效")
+        print(f"[DEBUG] 尝试的漂流瓶ID: {sorted(tried_nums)}")
+        await pick_bottle.finish("暂时没有可捡的漂流瓶")
 
 bottle_comment = on_command('comment')
 
 @bottle_comment.handle()
 async def handle_comment(event: Event, message: Message = CommandArg()):
-    args = message.extract_plain_text().split(maxsplit=1)
+    args = message.extract_plain_text().strip().split(maxsplit=1)
     if len(args) < 2:
         await bottle_comment.finish("格式错误，正确格式：/comment <漂流瓶ID> <评论内容>")
     
-    num, comment = args
+    try:
+        num = int(args[0])
+    except ValueError:
+        await bottle_comment.finish("漂流瓶ID必须是数字")
+    
+    comment = args[1]
     user_id = event.get_user_id()
     
-    # 获取评论者QQ昵称
-    commenter_nickname = get_user_nickname(event)
-    
-    # 验证评论内容
     if len(comment) > 100:
         await bottle_comment.finish("评论内容不能超过100字")
     
-    # 保存评论（包含QQ号和昵称）
-    try:
-        user_file = BOTTLE_DATA["user"] / f"{num}.csv"
-        # 新格式：QQ号, 昵称, 评论内容
-        await append_csv_rows(
-            filename=user_file,
-            header=[],  # 不需要表头
-            rows=[[user_id, commenter_nickname, comment]],
-            delimiter="|"
-        )
-    except Exception as e:
-        await bottle_comment.finish(f"评论失败：{str(e)}")
+    commenter_nickname = get_user_nickname(event)
     
-    # 使用保存的昵称回复
-    await bottle_comment.send(
-        f"评论成功！\n{commenter_nickname}：{comment}"
-    )
+    try:
+        data = load_bottle_data(num)
+        # 检查漂流瓶是否存在：有文本或有图片
+        if not data.get("text") and not data.get("images"):
+            await bottle_comment.finish(f"漂流瓶 {num} 不存在")
+    except Exception as e:
+        await bottle_comment.finish(f"检查漂流瓶失败: {str(e)}")
+    
+    # 读取用户信息文件
+    user_file = f"{BOTTLE_DIRS['user']}/{num}.json"
+    try:
+        user_json = read_file(user_file)
+        user_data = json.loads(user_json)
+    except Exception as e:
+        await bottle_comment.finish(f"读取用户信息失败：{e}")
+    
+    # 添加新评论
+    new_comment = {
+        "user_id": user_id,
+        "nickname": commenter_nickname,
+        "comment": comment,
+        "time": int(time.time())
+    }
+    
+    if "comments" not in user_data:
+        user_data["comments"] = []
+    
+    user_data["comments"].append(new_comment)
+    
+    # 写回文件
+    try:
+        write_file(user_file, json.dumps(user_data, ensure_ascii=False, indent=2))
+    except Exception as e:
+        await bottle_comment.finish(f"保存评论失败：{e}")
+    
+    await bottle_comment.send(f"评论成功！\n{commenter_nickname}：{comment}")

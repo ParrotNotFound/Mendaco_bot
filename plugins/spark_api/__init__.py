@@ -126,7 +126,7 @@ context_manager = ConversationContext(
 # 注意：这里不再有硬编码的默认值，所有值都应来自 .env 文件
 SPARK_APP_ID = config.spark_app_id
 SPARK_API_KEY = config.spark_api_key
-SPARK_API_SECRET = config.spark_api_key
+SPARK_API_SECRET = config.spark_api_secret
 SPARK_API_HOST = config.spark_api_host
 # 导入其他必要的模块
 from nonebot import on_command
