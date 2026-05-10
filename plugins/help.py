@@ -15,9 +15,19 @@ version = on_command('about')
 
 @version.handle()
 async def handle_function(event: Event):
-    msg = '''Mendaco_bot v0.1.0
-    最初版本的bot。
-    借用“银币怎么看”功能；
-    加入智能聊天功能
+    msg = '''Mendaco_bot v0.2.0
+    调整了“银币怎么看”功能，现在它会回复消息；
+    新增漂流瓶（测试中）
     '''
     await version.send(msg)
+
+helps = on_command('help')
+
+@helps.handle()
+async def handle_function(event: Event):
+    msg = '''功能一览：
+    漂流瓶->/throw /pick /comment
+    小助手->/ask
+    等待后续更新中
+    '''
+    await helps.send(msg)
