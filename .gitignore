@@ -224,8 +224,6 @@ src/
 logs/
 
 # 配置文件（包含敏感信息）
-config.json
-config.py
 *.ini
 *.cfg
 secrets/
