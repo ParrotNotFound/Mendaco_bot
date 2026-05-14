@@ -26,7 +26,8 @@ from typing import Optional
 def safe_path(filename: str) -> Path:
     """防止路径穿越攻击"""
     target_path = (plugin_dir / filename).resolve()
-    if plugin_dir.resolve() not in target_path.parents:
+    base_dir = plugin_dir.resolve()
+    if plugin_dir.resolve() not in target_path.parents and target_path != base_dir:
         raise ValueError("非法路径")
     return target_path
 

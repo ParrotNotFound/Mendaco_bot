@@ -36,6 +36,8 @@ config = get_plugin_config(Config)
 # 导入 file_edit 插件
 from nonebot import require
 require("plugins.file_edit")
+require("plugins.coin")
+from plugins.coin import get_coins
 from plugins.file_edit import (
     read_csv_file,
     write_csv_file,
@@ -771,7 +773,7 @@ async def handle_fish(event: Event):
             global_data["today_treasure_count"] = global_data.get("today_treasure_count", 0) + 1
         
         save_global_data(global_data)
-        
+        get_coins(user_id,coin_earned)
         # 生成结果消息
         result_msg = get_result_message(result_type, item_type, item_name, coin_earned, user_data)
         if message_id:

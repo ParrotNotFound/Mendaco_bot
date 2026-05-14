@@ -56,8 +56,6 @@ def text_to_image(text):
     
     return i
 
-#from PIL import Image, ImageDraw, ImageFont
-
 def text_to_image2(text):
     font = ImageFont.truetype(fontpath, 24)
     padding = 10
@@ -70,8 +68,8 @@ def text_to_image2(text):
     
     # 计算最大宽度
     max_width = 0
-    for text in text_list:
-        text_width = font.getlength(text)  # 获取文本宽度
+    for line in text_list:
+        text_width = font.getlength(line)  # 获取文本宽度
         max_width = max(max_width, text_width)
     
     # 计算画布尺寸
@@ -83,21 +81,46 @@ def text_to_image2(text):
     draw = ImageDraw.Draw(i)
     
     # 绘制文本
-    for j, text in enumerate(text_list):
-        # 设置颜色
-        clr = [0, 0, 0]
-        if '[S]' in text:
-            clr = [255, 165, 0]
-        elif '[SS]' in text:
-            clr = [255, 114, 0]
-        elif '[SSS]' in text:
-            clr = [255, 45, 0]
-        elif '[LEGEND]' in text:
-            clr = [255, 0, 255]
+    for j, line in enumerate(text_list):
+        # 初始化颜色为黑色
+        clr = (0, 0, 0)
+        
+        # 判断稀有度，设置主体颜色
+        if '[S]' in line:
+            clr = (255, 165, 0)  # 橙色
+        elif '[SS]' in line:
+            clr = (255, 114, 0)  # 橙红色
+        elif '[SSS]' in line:
+            clr = (255, 45, 0)   # 红色
+        elif '[LEGEND]' in line:
+            clr = (255, 0, 255)  # 洋红色
         
         # 计算Y坐标（考虑基线位置）
         y = padding + ascent + j * (h_total + margin)
-        draw.text((padding, y), text, font=font, fill=tuple(clr))
+        
+        # 检查是否包含*NEW*
+        if '*NEW*' in line:
+            # 拆分文本，*NEW*之前的文本和*NEW*本身
+            parts = line.split('*NEW*')
+            if len(parts) >= 2:
+                # 第一部分：主体文本
+                main_text = parts[0]
+                # 绘制主体文本
+                draw.text((padding, y), main_text, font=font, fill=clr)
+                
+                # 计算主体文本的宽度
+                main_text_width = font.getlength(main_text)
+                
+                # 第二部分：*NEW*标记
+                new_mark = '*NEW*'
+                # 绘制*NEW*，使用黄色
+                draw.text((padding + main_text_width, y), new_mark, font=font, fill=(255, 255, 0))  # 黄色
+            else:
+                # 如果格式异常，直接绘制整行
+                draw.text((padding, y), line, font=font, fill=clr)
+        else:
+            # 不包含*NEW*，直接绘制
+            draw.text((padding, y), line, font=font, fill=clr)
     
     return i
 
