@@ -422,7 +422,11 @@ async def handle_draw_record(event: MessageEvent):
     )
     
     # 只回复获得的唱片
-    await draw_record.finish(record_name)
+    message_id = event.message_id if hasattr(event, 'message_id') else None
+    if message_id:
+        await draw_record.finish(MessageSegment.reply(message_id)+record_name)
+    else:
+        await draw_record.finish(record_name)
 
 @draw_10.handle()
 async def handle_draw_10(event: MessageEvent):
@@ -489,7 +493,7 @@ async def handle_draw_10(event: MessageEvent):
         await draw_10.finish("❌ 保存唱片数据失败，银币已返还")
     
     # 构建回复消息
-    reply_msg = f"🎵 十连抽结果 ({successful_draws}次):\n"
+    reply_msg = f"十连抽结果:\n"
     reply_msg += "=" * 20 + "\n"
     
     for i, result in enumerate(draw_results, 1):
@@ -497,15 +501,27 @@ async def handle_draw_10(event: MessageEvent):
             result["record"], 
             result["is_new"]
         )
-        reply_msg += f"{i}. {record_name}\n"
+        reply_msg += f"{record_name}\n"
     
     # 统计新唱片数量
     new_records = sum(1 for r in draw_results if r["is_new"])
     duplicate_records = len(draw_results) - new_records
     
-    reply_msg += f"\n📊 统计: 新唱片{new_records}张，重复唱片{duplicate_records}张"
-    img = image_to_base64(reply_msg)
-    await draw_10.finish(MessageSegment.image(file=f"base64://{img}"))
+    #reply_msg += f"\n📊 统计: 新唱片{new_records}张，重复唱片{duplicate_records}张"
+    img = image_to_base64(text_to_image2(reply_msg))
+    message_id = event.message_id if hasattr(event, 'message_id') else None
+    if message_id:
+        await draw_10.send(MessageSegment.reply(message_id) + Message([
+                        MessageSegment("image", {
+                            "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
+                        })
+                    ]))
+    else:
+        await draw_10.finish(Message([
+                        MessageSegment("image", {
+                            "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
+                        })
+                    ]))
 
 @my_records.handle()
 async def handle_my_records(event: MessageEvent, args: Message = CommandArg()):

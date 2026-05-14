@@ -773,7 +773,7 @@ async def handle_fish(event: Event):
             global_data["today_treasure_count"] = global_data.get("today_treasure_count", 0) + 1
         
         save_global_data(global_data)
-        get_coins(user_id,coin_earned)
+        await get_coins(user_id,coin_earned)
         # 生成结果消息
         result_msg = get_result_message(result_type, item_type, item_name, coin_earned, user_data)
         if message_id:

@@ -2,6 +2,7 @@ from pathlib import Path
 import nonebot
 from nonebot import require, get_driver, on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, GroupMessageEvent, PrivateMessageEvent
+# from nonebot.adapters.console import Message, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 import asyncio
@@ -12,7 +13,6 @@ import aiofiles
 import aiofiles.os
 
 # 导入文件编辑器插件的安全路径功能
-# 注意：这里假设文件编辑器插件已正确安装并可导入
 from nonebot import require
 require("plugins.file_edit")
 from plugins.file_edit import (
@@ -40,9 +40,9 @@ __plugin_meta__ = PluginMetadata(
 driver = get_driver()
 
 # 配置项
-COINS_DIR_NAME = "coins"
+COIN_DIR_NAME = "coin"  # 修改为coin目录
 DEFAULT_COIN_NAME = "银币"
-INITIAL_COINS = 0  # 初始银币数
+INITIAL_COINS = 20  # 初始银币数
 INITIAL_EXP = 0      # 初始经验值
 
 # 用户昵称缓存，避免频繁读取文件
@@ -67,10 +67,17 @@ def _get_user_nickname_from_event(event: MessageEvent) -> str:
             return card_name.strip()
     return str(event.get_user_id())
 
+def _get_user_file_path(uid: str) -> str:
+    """获取用户数据文件路径（在coin目录下）"""
+    return f"{COIN_DIR_NAME}/{uid}.csv"
+
 async def _ensure_user_file(uid: str, nickname: str = "") -> bool:
     """确保用户数据文件存在，如果不存在则创建"""
-    filename = f"{uid}.csv"
+    filename = _get_user_file_path(uid)
     file_path = safe_path(filename)
+    
+    # 确保父目录存在
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     
     if not file_path.exists():
         # 创建初始数据：银币,经验,最后更新时间,昵称
@@ -93,7 +100,7 @@ async def _get_user_data(uid: str) -> Tuple[int, int, str, str]:
     
     返回: (银币数, 经验值, 最后更新时间, 昵称)
     """
-    filename = f"{uid}.csv"
+    filename = _get_user_file_path(uid)
     
     # 确保文件存在
     await _ensure_user_file(uid)
@@ -121,7 +128,7 @@ async def _get_user_data(uid: str) -> Tuple[int, int, str, str]:
 
 async def _save_user_data(uid: str, coins: int, exp: int, nickname: str = "") -> bool:
     """保存用户数据"""
-    filename = f"{uid}.csv"
+    filename = _get_user_file_path(uid)
     last_update = datetime.now().isoformat()
     
     # 如果提供了昵称，更新昵称缓存
@@ -237,16 +244,16 @@ async def _get_all_users() -> List[Tuple[str, int, int, str]]:
     """获取所有用户数据（用于排行榜）"""
     from pathlib import Path
     
-    # 获取coins目录
-    coins_dir = safe_path("").parent  # safe_path返回的是文件路径，其父目录是coins目录
+    # 获取coin目录
+    coin_dir = safe_path(COIN_DIR_NAME)
     
-    if not coins_dir.exists():
+    if not coin_dir.exists():
         return []
     
     users_data = []
     
     # 遍历所有CSV文件
-    for file_path in coins_dir.glob("*.csv"):
+    for file_path in coin_dir.glob("*.csv"):
         uid = file_path.stem  # 去掉扩展名
         
         try:
@@ -343,11 +350,11 @@ async def handle_rank(event: MessageEvent, args: Message = CommandArg()):
 @driver.on_startup
 async def init_coin_system():
     """初始化货币系统"""
-    # 确保coins目录存在
-    coins_dir = safe_path("").parent
-    coins_dir.mkdir(parents=True, exist_ok=True)
+    # 确保coin目录存在
+    coin_dir = safe_path(COIN_DIR_NAME)
+    coin_dir.mkdir(parents=True, exist_ok=True)
     
-    nonebot.logger.info(f"货币系统初始化完成，数据目录: {coins_dir}")
+    nonebot.logger.info(f"货币系统初始化完成，数据目录: {coin_dir}")
 
 # ========== 测试函数（可选，用于调试） ==========
 

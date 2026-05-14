@@ -114,7 +114,7 @@ def text_to_image2(text):
                 # 第二部分：*NEW*标记
                 new_mark = '*NEW*'
                 # 绘制*NEW*，使用黄色
-                draw.text((padding + main_text_width, y), new_mark, font=font, fill=(255, 255, 0))  # 黄色
+                draw.text((padding + main_text_width, y), new_mark, font=font, fill=(255, 205, 0))  # 黄色
             else:
                 # 如果格式异常，直接绘制整行
                 draw.text((padding, y), line, font=font, fill=clr)

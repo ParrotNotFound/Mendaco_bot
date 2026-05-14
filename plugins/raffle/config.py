@@ -10,10 +10,10 @@ class RecordConfig(BaseModel):
     # 唱片等级和概率配置
     record_rarity_prob: Dict[str, float] = Field(
         default_factory=lambda: {
-            "B": 0.45,    # 40% 概率
-            "A": 0.35,    # 25% 概率
-            "S": 0.12,    # 15% 概率
-            "SS": 0.05,   # 10% 概率
+            "B": 0.4,    # 40% 概率
+            "A": 0.38,    # 25% 概率
+            "S": 0.13,    # 15% 概率
+            "SS": 0.06,   # 10% 概率
             "SSS": 0.029,  # 7% 概率
             "LEGEND": 0.001  # 3% 概率
         },
