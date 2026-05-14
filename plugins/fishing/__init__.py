@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageSegment, Event, GroupMessageEvent, PrivateMessageEvent
-from nonebot.adapters.console import Message, MessageSegment, Event
 from nonebot.params import CommandArg
 from nonebot.log import logger
 
@@ -133,14 +132,7 @@ def get_random_trash() -> Dict[str, Any]:
         # 如果没有垃圾，返回一个默认的基础垃圾
         return {"name": "未知垃圾", "type": "base"}
     
-    # 根据权重决定是基础垃圾还是特殊垃圾
-    if random.random() < config.special_trash_weight and len(all_trash) > len(config.trash_items):
-        # 从特殊垃圾中随机选择
-        special_trash = load_special_trash()
-        if special_trash:
-            return random.choice(special_trash)
-    
-    # 从所有垃圾中随机选择
+    # 直接从所有垃圾中随机选择
     return random.choice(all_trash)
 
 def add_special_trash(trash_name: str, added_by: str, added_nickname: str) -> Tuple[bool, str]:
@@ -175,6 +167,7 @@ def add_special_trash(trash_name: str, added_by: str, added_nickname: str) -> Tu
     new_trash = {
         "id": len(special_trash) + 1,
         "name": trash_name,
+        "type": "special",  # 明确标记为特殊垃圾
         "added_by": added_by,
         "added_nickname": added_nickname,
         "added_time": int(time.time()),
@@ -424,9 +417,9 @@ def get_result_message(result_type: str, item_type: str, item_name: str, user_da
         ],
         "trash_special": [
             f"🎉 喜报：钓到了群友搬的石！\n{item_name}",
-            f"🎉 意外之喜！钓到了群友的石\n{item_name}",
-            f"🎉 不得了！钓到了群友的特殊贡献：\n{item_name}",
-            f"🎉 惊喜！钓到了群友的创意垃圾：\n{item_name}"
+            f"钓到了一个{item_name}，真是让人哭笑不得。",
+            f"🎉 好消息！钓到了{item_name}！",
+            f"🎉 钓到了创意垃圾：\n{item_name}"
         ],
         "fish": [
             f"钓到了一条{item_name}！今晚可以加餐了！",
@@ -495,7 +488,7 @@ async def handle_fish(event: Event):
     """处理钓鱼命令"""
     user_id = get_user_id(event)
     nickname = get_user_nickname(event)
-    
+    message_id = event.message_id if hasattr(event, 'message_id') else None
     # 检查是否可以钓鱼
     can_fish_result, msg = can_fish(user_id)
     if not can_fish_result:
@@ -525,7 +518,9 @@ async def handle_fish(event: Event):
         
         # 生成结果消息
         result_msg = get_result_message(result_type, item_type, item_name, user_data)
-        await fish.send(MessageSegment.text(result_msg))
+        if message_id:
+            result_msg = MessageSegment.reply(message_id) + result_msg
+        await fish.send(result_msg)
         
     except Exception as e:
         logger.error(f"钓鱼处理失败: {e}")
@@ -577,7 +572,6 @@ async def handle_list_trash(event: Event):
             msg += MessageSegment.text("   " + "-"*20 + "\n")
     
     msg += MessageSegment.text(f"\n📊 共 {len(special_trash)} 个特殊垃圾")
-    msg += MessageSegment.text(f"\n⚖️ 特殊垃圾出现权重：{config.special_trash_weight*100:.0f}%")
     
     await list_trash.send(msg)
 
@@ -701,15 +695,14 @@ async def handle_fish_help():
     msg += MessageSegment.text(f"  /fish_record - 查看个人钓鱼记录\n")
     msg += MessageSegment.text(f"  /fish_rank - 查看钓鱼排行榜\n")
     msg += MessageSegment.text(f"  /add_trash 名称 - 添加特殊垃圾\n")
-    # msg += MessageSegment.text(f"  /list_trash - 查看所有特殊垃圾\n")
-    # msg += MessageSegment.text(f"  /del_trash 序号 - 删除特殊垃圾\n")
+    #msg += MessageSegment.text(f"  /list_trash - 查看所有特殊垃圾\n")
+    #msg += MessageSegment.text(f"  /del_trash 序号 - 删除特殊垃圾\n")
     msg += MessageSegment.text(f"  /fish_help - 显示此帮助\n\n")
     # msg += MessageSegment.text(f"📊 钓鱼概率：\n")
     # msg += MessageSegment.text(f"  空军：{config.probability_air*100:.0f}%\n")
-    # msg += MessageSegment.text(f"  垃圾：{config.probability_trash*100:.0f}%\n")
-    # msg += MessageSegment.text(f"  鱼：{config.probability_fish*100:.0f}%\n")
-    # msg += MessageSegment.text(f"  宝物：{config.probability_treasure*100:.0f}%\n")
-    # msg += MessageSegment.text(f"  特殊垃圾权重：{config.special_trash_weight*100:.0f}%\n\n")
+    #msg += MessageSegment.text(f"  垃圾：{config.probability_trash*100:.0f}%\n")
+    #msg += MessageSegment.text(f"  鱼：{config.probability_fish*100:.0f}%\n")
+    #msg += MessageSegment.text(f"  宝物：{config.probability_treasure*100:.0f}%\n\n")
     msg += MessageSegment.text(f"⏰ 限制说明：\n")
     msg += MessageSegment.text(f"  每人每小时最多可钓鱼{config.fishing_limit_per_hour}次\n")
     msg += MessageSegment.text(f"  特殊垃圾数量限制：{config.max_special_trash_count}个\n")
