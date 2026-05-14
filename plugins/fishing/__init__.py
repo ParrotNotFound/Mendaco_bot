@@ -3,6 +3,7 @@ from nonebot.plugin import PluginMetadata
 import random
 import time
 import json
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
 from nonebot import on_command
@@ -22,6 +23,9 @@ __plugin_meta__ = PluginMetadata(
 添加特殊垃圾: /add_trash 垃圾名称
 查看特殊垃圾: /list_trash
 删除特殊垃圾: /del_trash 序号
+添加自定义宝藏: /add_treasure 宝藏名称 价格(20-100)
+查看自定义宝藏: /list_treasure
+删除自定义宝藏: /del_treasure 序号
 钓鱼帮助: /fish_help
 """,
     config=Config,
@@ -48,11 +52,11 @@ DATA_FILES = {
     "users": f"{FISHING_ROOT}/users",  # 用户数据目录
     "global": f"{FISHING_ROOT}/global.json",  # 全局数据文件
     "special_trash": f"{FISHING_ROOT}/special_trash.json",  # 特殊垃圾文件
+    "custom_treasure": f"{FISHING_ROOT}/custom_treasure.json",  # 自定义宝藏文件
     "temp": f"{FISHING_ROOT}/temp"  # 临时数据目录
 }
+
 # 特殊垃圾管理
-
-
 def save_special_trash(trash_list: List[Dict[str, Any]]) -> bool:
     """保存特殊垃圾列表"""
     try:
@@ -61,6 +65,7 @@ def save_special_trash(trash_list: List[Dict[str, Any]]) -> bool:
     except Exception as e:
         logger.error(f"保存特殊垃圾失败: {e}")
         return False
+
 def load_special_trash() -> List[Dict[str, Any]]:
     """加载特殊垃圾列表"""
     try:
@@ -70,6 +75,29 @@ def load_special_trash() -> List[Dict[str, Any]]:
     except:
         pass
     return []
+
+# 自定义宝藏管理
+def save_custom_treasure(treasure_list: List[Dict[str, Any]]) -> bool:
+    """保存自定义宝藏列表"""
+    try:
+        write_file(DATA_FILES["custom_treasure"], json.dumps(treasure_list, ensure_ascii=False, indent=2))
+        return True
+    except Exception as e:
+        logger.error(f"保存自定义宝藏失败: {e}")
+        return False
+
+def load_custom_treasure() -> List[Dict[str, Any]]:
+    """加载自定义宝藏列表（只加载未被钓走的）"""
+    try:
+        data = read_file(DATA_FILES["custom_treasure"])
+        if data:
+            all_treasure = json.loads(data)
+            # 只返回未被钓走的宝藏
+            return [t for t in all_treasure if not t.get("fished", False)]
+    except:
+        pass
+    return []
+
 # 初始化文件目录
 def init_directories():
     """初始化所需的目录结构"""
@@ -89,6 +117,15 @@ def init_directories():
             save_special_trash([])
     except:
         save_special_trash([])
+    
+    # 初始化自定义宝藏文件
+    try:
+        custom_treasure = load_custom_treasure()
+        if custom_treasure is None:
+            # 创建空的自定义宝藏列表
+            save_custom_treasure([])
+    except:
+        save_custom_treasure([])
 
 init_directories()
 
@@ -112,8 +149,6 @@ def get_group_id(event: Event) -> Optional[str]:
         return str(event.group_id)
     return None
 
-
-
 def get_all_trash_items() -> List[Dict[str, Any]]:
     """获取所有垃圾物品（基础垃圾 + 特殊垃圾）"""
     # 基础垃圾转换为字典格式
@@ -134,6 +169,70 @@ def get_random_trash() -> Dict[str, Any]:
     
     # 直接从所有垃圾中随机选择
     return random.choice(all_trash)
+
+def get_all_treasure_items() -> List[Dict[str, Any]]:
+    """获取所有宝藏物品（基础宝藏 + 自定义宝藏）"""
+    # 基础宝藏
+    base_treasure = []
+    for item in config.base_treasure_items:
+        base_treasure.append({
+            "name": item["name"],
+            "type": "base",
+            "value": random.randint(config.treasure_value_range[0], config.treasure_value_range[1])
+        })
+    
+    # 自定义宝藏（只包含未被钓走的）
+    custom_treasure = load_custom_treasure()
+    
+    return base_treasure + custom_treasure
+
+def get_random_treasure() -> Optional[Dict[str, Any]]:
+    """随机获取一个宝藏（基础宝藏或自定义宝藏）"""
+    all_treasure = get_all_treasure_items()
+    
+    if not all_treasure:
+        return None
+    
+    return random.choice(all_treasure)
+
+def calculate_fish_value(fish_detail: Dict) -> int:
+    """计算鱼的价值
+    鱼重 = 平均重量 * 0.8 ~ 1.2 随机波动
+    价值 = 鱼重 * 每斤价格，四舍五入取整
+    """
+    avg_weight = fish_detail["avg_weight"]
+    price_per_jin = fish_detail["price_per_jin"]
+    # 随机波动 0.8 ~ 1.2
+    weight = avg_weight * (0.8 + 0.4 * random.random())
+    value = weight * price_per_jin
+    return int(round(value))
+
+def get_random_fish() -> Tuple[str, int]:
+    """随机获取一条鱼，返回鱼的名字和价值"""
+    # 根据概率随机选择一条鱼
+    total_prob = sum(fish.probability for fish in config.fish_details)
+    rand_val = random.random() * total_prob
+    cumulative = 0.0
+    selected_fish = None
+    
+    for fish in config.fish_details:
+        cumulative += fish.probability
+        if rand_val <= cumulative:
+            selected_fish = fish
+            break
+    
+    if selected_fish is None:
+        selected_fish = config.fish_details[0]
+    
+    # 计算价值
+    fish_detail = {
+        "name": selected_fish.name,
+        "avg_weight": selected_fish.avg_weight,
+        "price_per_jin": selected_fish.price_per_jin
+    }
+    value = calculate_fish_value(fish_detail)
+    
+    return selected_fish.name, value
 
 def add_special_trash(trash_name: str, added_by: str, added_nickname: str) -> Tuple[bool, str]:
     """添加特殊垃圾"""
@@ -182,6 +281,90 @@ def add_special_trash(trash_name: str, added_by: str, added_nickname: str) -> Tu
     else:
         return False, "保存特殊垃圾失败"
 
+def add_custom_treasure(treasure_name: str, value: int, added_by: str, added_nickname: str) -> Tuple[bool, str]:
+    """添加自定义宝藏"""
+    # 检查宝藏名称是否为空
+    if not treasure_name or treasure_name.strip() == "":
+        return False, "宝藏名称不能为空"
+    
+    treasure_name = treasure_name.strip()
+    
+    # 检查长度限制
+    if len(treasure_name) > 100:
+        return False, "宝藏名称太长了，请控制在100个字符以内"
+    
+    # 检查价值范围
+    min_val, max_val = config.treasure_value_range
+    if value < min_val or value > max_val:
+        return False, f"宝藏价值必须在{min_val}到{max_val}之间"
+    
+    # 加载现有自定义宝藏
+    custom_treasure = load_custom_treasure()
+    # 注意：load_custom_treasure只返回未被钓走的，我们需要加载全部来判断名称重复
+    try:
+        all_treasure_data = read_file(DATA_FILES["custom_treasure"])
+        if all_treasure_data:
+            all_custom_treasure = json.loads(all_treasure_data)
+        else:
+            all_custom_treasure = []
+    except:
+        all_custom_treasure = []
+    
+    # 检查是否已达到数量限制
+    if len(all_custom_treasure) >= config.max_custom_treasure_count:
+        return False, f"自定义宝藏数量已达到上限({config.max_custom_treasure_count}个)，无法添加更多"
+    
+    # 检查是否已存在相同的宝藏（包括已被钓走的）
+    for treasure in all_custom_treasure:
+        if treasure["name"] == treasure_name:
+            return False, f"自定义宝藏 '{treasure_name}' 已存在"
+    
+    # 检查是否是基础宝藏
+    for base_treasure in config.base_treasure_items:
+        if base_treasure["name"] == treasure_name:
+            return False, f"'{treasure_name}' 已经是基础宝藏了"
+    
+    # 添加新宝藏
+    new_treasure = {
+        "id": len(all_custom_treasure) + 1,
+        "name": treasure_name,
+        "type": "custom",
+        "value": value,
+        "added_by": added_by,
+        "added_nickname": added_nickname,
+        "added_time": int(time.time()),
+        "fished": False,  # 是否已被钓走
+        "fished_by": None,  # 被谁钓走
+        "fished_time": None  # 被钓走的时间
+    }
+    
+    all_custom_treasure.append(new_treasure)
+    
+    if save_custom_treasure(all_custom_treasure):
+        return True, f"成功添加自定义宝藏: {treasure_name}，价值{value}银币"
+    else:
+        return False, "保存自定义宝藏失败"
+
+def mark_treasure_as_fished(treasure_id: int, user_id: str) -> bool:
+    """标记宝藏为已被钓走"""
+    try:
+        all_treasure_data = read_file(DATA_FILES["custom_treasure"])
+        if all_treasure_data:
+            all_custom_treasure = json.loads(all_treasure_data)
+        else:
+            all_custom_treasure = []
+    except:
+        all_custom_treasure = []
+    
+    for treasure in all_custom_treasure:
+        if treasure["id"] == treasure_id and not treasure.get("fished", False):
+            treasure["fished"] = True
+            treasure["fished_by"] = user_id
+            treasure["fished_time"] = int(time.time())
+            return save_custom_treasure(all_custom_treasure)
+    
+    return False
+
 def delete_special_trash(trash_id: int) -> Tuple[bool, str]:
     """删除特殊垃圾"""
     special_trash = load_special_trash()
@@ -202,6 +385,36 @@ def delete_special_trash(trash_id: int) -> Tuple[bool, str]:
                 return False, "保存特殊垃圾列表失败"
     
     return False, f"未找到ID为 {trash_id} 的特殊垃圾"
+
+def delete_custom_treasure(treasure_id: int) -> Tuple[bool, str]:
+    """删除自定义宝藏（只能删除未被钓走的）"""
+    try:
+        all_treasure_data = read_file(DATA_FILES["custom_treasure"])
+        if all_treasure_data:
+            all_custom_treasure = json.loads(all_treasure_data)
+        else:
+            all_custom_treasure = []
+    except:
+        all_custom_treasure = []
+    
+    for i, treasure in enumerate(all_custom_treasure):
+        if treasure["id"] == treasure_id:
+            if treasure.get("fished", False):
+                return False, "该宝藏已被钓走，无法删除"
+            
+            treasure_name = treasure["name"]
+            del all_custom_treasure[i]
+            
+            # 重新编号
+            for j, t in enumerate(all_custom_treasure):
+                t["id"] = j + 1
+            
+            if save_custom_treasure(all_custom_treasure):
+                return True, f"已删除自定义宝藏: {treasure_name}"
+            else:
+                return False, "保存自定义宝藏列表失败"
+    
+    return False, f"未找到ID为 {treasure_id} 的自定义宝藏"
 
 # 用户数据管理
 def get_user_file_path(user_id: str) -> str:
@@ -231,7 +444,9 @@ def load_user_data(user_id: str) -> Dict:
         "fish_details": {},  # 每种鱼的详细数量
         "trash_details": {},  # 每种垃圾的详细数量
         "special_trash_details": {},  # 每种特殊垃圾的详细数量
-        "treasure_details": {}  # 每种宝物的详细数量
+        "treasure_details": {},  # 每种宝物的详细数量
+        "total_coin_earned": 0,  # 通过钓鱼获得的总银币
+        "treasure_owned": []  # 拥有的宝藏（自定义宝藏）
     }
 
 def save_user_data(user_id: str, data: Dict) -> bool:
@@ -301,7 +516,7 @@ def can_fish(user_id: str) -> Tuple[bool, str]:
 def update_global_stats():
     """更新全局统计数据"""
     data = load_global_data()
-    today = datetime.now().strftime("%Y-%m-d")
+    today = datetime.now().strftime("%Y-%m-%d")
     
     # 如果是新的一天，重置今日统计
     if data.get("last_update_date") != today:
@@ -312,12 +527,12 @@ def update_global_stats():
     
     save_global_data(data)
 
-def do_fishing() -> Tuple[str, str, str]:
-    """执行钓鱼，返回(结果类型, 物品类型, 物品名称)"""
+def do_fishing() -> Tuple[str, str, str, int]:
+    """执行钓鱼，返回(结果类型, 物品类型, 物品名称, 获得银币)"""
     rand = random.random()
     
     if rand < config.probability_air:
-        return "air", "air", "空军"
+        return "air", "air", "空军", 0
     elif rand < config.probability_air + config.probability_trash:
         # 随机获取垃圾
         trash_item = get_random_trash()
@@ -329,13 +544,31 @@ def do_fishing() -> Tuple[str, str, str]:
             trash_id = trash_item.get("id")
             update_special_trash_stats(trash_id)
         
-        return "trash", trash_type, trash_name
+        return "trash", trash_type, trash_name, config.trash_normal_value
     elif rand < config.probability_air + config.probability_trash + config.probability_fish:
-        item = random.choice(config.fish_items)
-        return "fish", "fish", item
+        # 钓到鱼
+        fish_name, fish_value = get_random_fish()
+        return "fish", "fish", fish_name, fish_value
     else:
-        item = random.choice(config.treasure_items)
-        return "treasure", "treasure", item
+        # 钓到宝藏
+        treasure = get_random_treasure()
+        if treasure is None:
+            # 没有宝藏，默认给一个基础宝藏
+            base_treasure = random.choice(config.base_treasure_items)
+            treasure_name = base_treasure["name"]
+            treasure_value = random.randint(config.treasure_value_range[0], config.treasure_value_range[1])
+            treasure_type = "base"
+        else:
+            treasure_name = treasure["name"]
+            treasure_type = treasure["type"]
+            if treasure_type == "custom":
+                treasure_value = treasure["value"]
+                # 标记为已被钓走
+                mark_treasure_as_fished(treasure["id"], "system")  # 实际用户ID在更新用户数据时设置
+            else:
+                treasure_value = treasure["value"]
+        
+        return "treasure", treasure_type, treasure_name, treasure_value
 
 def update_special_trash_stats(trash_id: int):
     """更新特殊垃圾的统计信息"""
@@ -349,7 +582,7 @@ def update_special_trash_stats(trash_id: int):
     
     save_special_trash(special_trash)
 
-def update_user_stats(user_id: str, result_type: str, item_type: str, item_name: str) -> Dict:
+def update_user_stats(user_id: str, result_type: str, item_type: str, item_name: str, coin_earned: int) -> Dict:
     """更新用户统计数据"""
     data = load_user_data(user_id)
     
@@ -361,6 +594,9 @@ def update_user_stats(user_id: str, result_type: str, item_type: str, item_name:
     if "last_fishing_time" not in data:
         data["last_fishing_time"] = []
     data["last_fishing_time"].append(now)
+    
+    # 更新获得的银币总数
+    data["total_coin_earned"] = data.get("total_coin_earned", 0) + coin_earned
     
     # 根据结果类型更新统计数据
     if result_type == "air":
@@ -392,6 +628,18 @@ def update_user_stats(user_id: str, result_type: str, item_type: str, item_name:
         if "treasure_details" not in data:
             data["treasure_details"] = {}
         data["treasure_details"][item_name] = data["treasure_details"].get(item_name, 0) + 1
+        
+        # 如果是自定义宝藏，添加到用户拥有的宝藏列表
+        if item_type == "custom":
+            if "treasure_owned" not in data:
+                data["treasure_owned"] = []
+            # 记录宝藏信息
+            treasure_info = {
+                "name": item_name,
+                "value": coin_earned,
+                "time": now
+            }
+            data["treasure_owned"].append(treasure_info)
     
     # 保存数据
     if save_user_data(user_id, data):
@@ -399,7 +647,7 @@ def update_user_stats(user_id: str, result_type: str, item_type: str, item_name:
     else:
         raise Exception("保存用户数据失败")
 
-def get_result_message(result_type: str, item_type: str, item_name: str, user_data: Dict) -> str:
+def get_result_message(result_type: str, item_type: str, item_name: str, coin_earned: int, user_data: Dict) -> str:
     """生成结果消息"""
     messages = {
         "air": [
@@ -448,6 +696,10 @@ def get_result_message(result_type: str, item_type: str, item_name: str, user_da
     # 获取随机消息
     base_msg = random.choice(messages.get(msg_type, ["钓鱼结束"]))
     
+    # 添加货币信息
+    if coin_earned > 0:
+        base_msg += f"\n💰 获得银币: {coin_earned}枚"
+    
     # 添加统计信息
     stats_msg = f"\n\n📊 本次钓鱼结果：{item_name}"
     
@@ -462,8 +714,11 @@ def get_result_message(result_type: str, item_type: str, item_name: str, user_da
         stats_msg += f"\n🐟 钓到鱼总数：{user_data.get('fish_count', 0)}条"
     elif result_type == "treasure":
         stats_msg += f"\n💰 宝物总数：{user_data.get('treasure_count', 0)}个"
+        if item_type == "custom":
+            stats_msg += f"\n🎁 这是自定义宝藏，现已归你所有！"
     
     stats_msg += f"\n🎣 总钓鱼次数：{user_data.get('total_count', 0)}次"
+    stats_msg += f"\n💰 钓鱼总收益：{user_data.get('total_coin_earned', 0)}银币"
     
     # 计算剩余次数
     now = int(time.time())
@@ -489,6 +744,7 @@ async def handle_fish(event: Event):
     user_id = get_user_id(event)
     nickname = get_user_nickname(event)
     message_id = event.message_id if hasattr(event, 'message_id') else None
+    
     # 检查是否可以钓鱼
     can_fish_result, msg = can_fish(user_id)
     if not can_fish_result:
@@ -498,11 +754,11 @@ async def handle_fish(event: Event):
     update_global_stats()
     
     # 执行钓鱼
-    result_type, item_type, item_name = do_fishing()
+    result_type, item_type, item_name, coin_earned = do_fishing()
     
     try:
         # 更新用户数据
-        user_data = update_user_stats(user_id, result_type, item_type, item_name)
+        user_data = update_user_stats(user_id, result_type, item_type, item_name, coin_earned)
         
         # 更新全局今日统计
         global_data = load_global_data()
@@ -517,7 +773,7 @@ async def handle_fish(event: Event):
         save_global_data(global_data)
         
         # 生成结果消息
-        result_msg = get_result_message(result_type, item_type, item_name, user_data)
+        result_msg = get_result_message(result_type, item_type, item_name, coin_earned, user_data)
         if message_id:
             result_msg = MessageSegment.reply(message_id) + result_msg
         await fish.send(result_msg)
@@ -594,6 +850,79 @@ async def handle_del_trash(event: Event, message: Message = CommandArg()):
     success, result_msg = delete_special_trash(trash_id)
     await del_trash.finish(result_msg)
 
+# 添加自定义宝藏命令
+add_treasure = on_command("add_treasure", aliases={"添加宝藏", "添加自定义宝藏"}, priority=5, block=True)
+
+@add_treasure.handle()
+async def handle_add_treasure(event: Event, message: Message = CommandArg()):
+    """添加自定义宝藏"""
+    args = message.extract_plain_text().strip().split()
+    
+    if len(args) < 2:
+        await add_treasure.finish("请提供要添加的宝藏名称和价格，格式：/add_treasure 宝藏名称 价格(20-100)")
+    
+    treasure_name = args[0]
+    try:
+        value = int(args[1])
+    except ValueError:
+        await add_treasure.finish("价格必须是数字，格式：/add_treasure 宝藏名称 价格(20-100)")
+    
+    user_id = get_user_id(event)
+    nickname = get_user_nickname(event)
+    
+    success, result_msg = add_custom_treasure(treasure_name, value, user_id, nickname)
+    
+    await add_treasure.finish(result_msg)
+
+# 查看自定义宝藏列表命令
+list_treasure = on_command("list_treasure", aliases={"自定义宝藏", "查看宝藏"}, priority=5, block=True)
+
+@list_treasure.handle()
+async def handle_list_treasure(event: Event):
+    """查看自定义宝藏列表（只显示未被钓走的）"""
+    custom_treasure = load_custom_treasure()
+    
+    if not custom_treasure:
+        await list_treasure.finish("当前没有自定义宝藏，使用 /add_treasure 宝藏名称 价格 来添加吧！")
+    
+    # 构建消息
+    msg = MessageSegment.text("💰 自定义宝藏列表（未被钓走的）\n")
+    msg += MessageSegment.text("=" * 30 + "\n")
+    
+    for i, treasure in enumerate(custom_treasure, 1):
+        added_time = time.strftime("%Y-%m-%d", time.localtime(treasure.get("added_time", 0)))
+        added_by = treasure.get("added_nickname", treasure.get("added_by", "未知"))
+        value = treasure.get("value", 0)
+        
+        msg += MessageSegment.text(f"{i}. {treasure['name']} - 价值{value}银币\n")
+        msg += MessageSegment.text(f"   添加者：{added_by} | 添加时间：{added_time}\n")
+        
+        if i < len(custom_treasure):
+            msg += MessageSegment.text("   " + "-"*20 + "\n")
+    
+    msg += MessageSegment.text(f"\n📊 共 {len(custom_treasure)} 个自定义宝藏（未被钓走）")
+    
+    await list_treasure.send(msg)
+
+# 删除自定义宝藏命令
+del_treasure = on_command("del_treasure", aliases={"删除宝藏", "移除宝藏"}, priority=5, block=True)
+
+@del_treasure.handle()
+async def handle_del_treasure(event: Event, message: Message = CommandArg()):
+    """删除自定义宝藏"""
+    treasure_id_str = message.extract_plain_text().strip()
+    
+    if not treasure_id_str:
+        await del_treasure.finish("请提供要删除的宝藏ID，格式：/del_treasure 序号\n使用 /list_treasure 查看所有自定义宝藏")
+    
+    try:
+        treasure_id = int(treasure_id_str)
+    except ValueError:
+        await del_treasure.finish("宝藏ID必须是数字，格式：/del_treasure 序号")
+    
+    success, result_msg = delete_custom_treasure(treasure_id)
+    await del_treasure.finish(result_msg)
+
 # 查看个人记录命令
 fish_record = on_command("fish_record", aliases={"钓鱼记录", "我的钓鱼"}, priority=5, block=True)
 
@@ -618,7 +947,18 @@ async def handle_fish_record(event: Event):
     msg += MessageSegment.text(f"钓到普通垃圾：{data.get('trash_count', 0) - data.get('special_trash_count', 0)}次\n")
     msg += MessageSegment.text(f"钓到特殊垃圾：{data.get('special_trash_count', 0)}次\n")
     msg += MessageSegment.text(f"钓到鱼：{data.get('fish_count', 0)}次\n")
-    msg += MessageSegment.text(f"钓到宝物：{data.get('treasure_count', 0)}次\n\n")
+    msg += MessageSegment.text(f"钓到宝物：{data.get('treasure_count', 0)}次\n")
+    msg += MessageSegment.text(f"钓鱼总收益：{data.get('total_coin_earned', 0)}银币\n\n")
+    
+    # 拥有的自定义宝藏
+    if data.get("treasure_owned"):
+        msg += MessageSegment.text("💰 拥有的自定义宝藏：\n")
+        for treasure in data["treasure_owned"][:5]:  # 最多显示5个
+            treasure_time = time.strftime("%Y-%m-%d", time.localtime(treasure.get("time", 0)))
+            msg += MessageSegment.text(f"  {treasure['name']} - 价值{treasure.get('value', 0)}银币 ({treasure_time})\n")
+        if len(data["treasure_owned"]) > 5:
+            msg += MessageSegment.text(f"  ... 等{len(data['treasure_owned'])}个宝藏\n")
+        msg += MessageSegment.text("\n")
     
     # 详细统计
     if data.get("special_trash_details"):
@@ -695,16 +1035,22 @@ async def handle_fish_help():
     msg += MessageSegment.text(f"  /fish_record - 查看个人钓鱼记录\n")
     msg += MessageSegment.text(f"  /fish_rank - 查看钓鱼排行榜\n")
     msg += MessageSegment.text(f"  /add_trash 名称 - 添加特殊垃圾\n")
-    #msg += MessageSegment.text(f"  /list_trash - 查看所有特殊垃圾\n")
-    #msg += MessageSegment.text(f"  /del_trash 序号 - 删除特殊垃圾\n")
+    msg += MessageSegment.text(f"  /add_treasure 名称 价格 - 添加自定义宝藏(20-100)\n")
+    '''
+    msg += MessageSegment.text(f"  /list_treasure - 查看自定义宝藏\n")
+    msg += MessageSegment.text(f"  /del_treasure 序号 - 删除自定义宝藏\n")
+    msg += MessageSegment.text(f"  /list_trash - 查看所有特殊垃圾\n")
+    msg += MessageSegment.text(f"  /del_trash 序号 - 删除特殊垃圾\n")
     msg += MessageSegment.text(f"  /fish_help - 显示此帮助\n\n")
-    # msg += MessageSegment.text(f"📊 钓鱼概率：\n")
-    # msg += MessageSegment.text(f"  空军：{config.probability_air*100:.0f}%\n")
-    #msg += MessageSegment.text(f"  垃圾：{config.probability_trash*100:.0f}%\n")
-    #msg += MessageSegment.text(f"  鱼：{config.probability_fish*100:.0f}%\n")
-    #msg += MessageSegment.text(f"  宝物：{config.probability_treasure*100:.0f}%\n\n")
+    msg += MessageSegment.text(f"📊 钓鱼概率：\n")
+    msg += MessageSegment.text(f"  空军：{config.probability_air*100:.0f}%\n")
+    msg += MessageSegment.text(f"  垃圾：{config.probability_trash*100:.0f}%\n")
+    msg += MessageSegment.text(f"  鱼：{config.probability_fish*100:.0f}%\n")
+    msg += MessageSegment.text(f"  宝物：{config.probability_treasure*100:.0f}%\n\n")
+    '''
     msg += MessageSegment.text(f"⏰ 限制说明：\n")
     msg += MessageSegment.text(f"  每人每小时最多可钓鱼{config.fishing_limit_per_hour}次\n")
     msg += MessageSegment.text(f"  特殊垃圾数量限制：{config.max_special_trash_count}个\n")
+    msg += MessageSegment.text(f"  自定义宝藏数量限制：{config.max_custom_treasure_count}个\n")
     
     await fish_help.send(msg)
