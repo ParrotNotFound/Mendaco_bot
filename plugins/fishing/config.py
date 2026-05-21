@@ -11,12 +11,12 @@ class FishDetail(BaseModel):
 class Config(BaseModel):
     """钓鱼插件配置"""
     # 钓鱼次数限制
-    fishing_limit_per_hour: int = Field(6, description="每小时钓鱼次数限制")
+    fishing_limit_per_hour: int = Field(3, description="每小时钓鱼次数限制")
     
     # 概率配置
-    probability_air: float = Field(0.495, description="空军的概率")
+    probability_air: float = Field(0.295, description="空军的概率")
     probability_trash: float = Field(0.35, description="钓到垃圾的概率")
-    probability_fish: float = Field(0.15, description="钓到鱼的概率")
+    probability_fish: float = Field(0.35, description="钓到鱼的概率")
     probability_treasure: float = Field(0.005, description="钓到宝物的概率")
     
     # 物品列表

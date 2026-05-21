@@ -542,42 +542,49 @@ async def handle_my_records(event: MessageEvent, args: Message = CommandArg()):
     if not records:
         await my_records.finish(f"🎵 {nickname}还没有任何唱片，快来抽取第一张唱片吧！")
     
-    # 获取唯一唱片列表
-    unique_records = []
-    seen_keys = set()
+    # 修正统计：总唱片数 = 所有唱片count字段的总和
+    total_count = sum(record.get("count", 1) for record in records)
+    # 唯一唱片种类数 = records列表的长度（因为每个唯一唱片只在列表中存储一次）
+    unique_count = len(records)
     
-    for record in records:
-        record_key = get_record_unique_key(record)
-        if record_key not in seen_keys:
-            seen_keys.add(record_key)
-            unique_records.append(record)
+    # 定义稀有度排序顺序（从高到低）
+    rarity_order = ["LEGEND", "SSS", "SS", "S", "A", "B"]
+    # 创建稀有度权重映射
+    rarity_weight = {rarity: len(rarity_order) - i for i, rarity in enumerate(rarity_order)}
+    
+    # 对唱片进行排序：先按稀有度权重降序，再按抽到数量（count）降序
+    sorted_records = sorted(
+        records, 
+        key=lambda x: (rarity_weight.get(x.get("rarity", "B"), 0), x.get("count", 1)), 
+        reverse=True
+    )
     
     # 分页设置
     records_per_page = 10
-    total_pages = (len(unique_records) + records_per_page - 1) // records_per_page
+    total_pages = (unique_count + records_per_page - 1) // records_per_page
     page = max(1, min(page, total_pages))
     
     # 计算起始和结束索引
     start_idx = (page - 1) * records_per_page
-    end_idx = min(start_idx + records_per_page, len(unique_records))
+    end_idx = min(start_idx + records_per_page, unique_count)
     
     # 构建消息
     reply_msg = f"🎵 {nickname}的唱片收藏 (第{page}/{total_pages}页)\n"
-    reply_msg += f"总计: {len(records)}张唱片 ({len(unique_records)}种)\n\n"
+    reply_msg += f"总计: {total_count}张唱片 ({unique_count}种)\n\n"
     
     # 按稀有度统计
     rarity_stats = user_data.get("record_stats", {}).get("by_rarity", {})
     if rarity_stats:
         reply_msg += "📊 稀有度统计:\n"
-        for rarity in ["B", "A", "S", "SS", "SSS", "LEGEND"]:
+        for rarity in rarity_order:
             count = rarity_stats.get(rarity, 0)
             if count > 0:
                 reply_msg += f"  {rarity}: {count}种\n"
     
-    reply_msg += f"\n📁 唱片列表:\n"
+    reply_msg += f"\n📁 唱片列表 (按稀有度和数量排序):\n"
     
     for i in range(start_idx, end_idx):
-        record = unique_records[i]
+        record = sorted_records[i]
         record_name = get_record_display_name(record, False)
         count = record.get("count", 1)
         
@@ -640,6 +647,12 @@ async def handle_record_stats(event: MessageEvent):
     
     # 加载用户数据
     user_data = load_user_data(user_id)
+    records = user_data.get("records", [])
+    
+    # 修正统计：总唱片数 = 所有唱片count字段的总和
+    total_count = sum(record.get("count", 1) for record in records)
+    # 唯一唱片种类数 = records列表的长度
+    unique_count = len(records)
     
     reply_msg = f"📊 {nickname}的唱片统计\n"
     reply_msg += "=" * 20 + "\n"
@@ -648,23 +661,19 @@ async def handle_record_stats(event: MessageEvent):
     reply_msg += f"总抽取次数: {user_data.get('total_draws', 0)}次\n"
     reply_msg += f"今日抽取: {user_data.get('today_draws', 0)}/{config.daily_draw_limit}次\n"
     
-    # 唱片统计
-    total_records = len(user_data.get("records", []))
-    unique_stats = user_data.get("record_stats", {})
-    total_unique = unique_stats.get("total_unique", 0)
-    
-    reply_msg += f"拥有唱片: {total_records}张\n"
-    reply_msg += f"唯一唱片: {total_unique}种\n"
+    # 修正唱片统计
+    reply_msg += f"拥有唱片: {total_count}张\n"
+    reply_msg += f"唯一唱片: {unique_count}种\n"
     reply_msg += f"总消费银币: {user_data.get('total_spent', 0)}枚\n\n"
     
     # 稀有度统计
-    rarity_stats = unique_stats.get("by_rarity", {})
+    rarity_stats = user_data.get("record_stats", {}).get("by_rarity", {})
     if rarity_stats:
         reply_msg += "📈 稀有度分布:\n"
         for rarity, prob in config.record_rarity_prob.items():
             count = rarity_stats.get(rarity, 0)
-            if total_unique > 0:
-                actual_rate = count / total_unique
+            if unique_count > 0:
+                actual_rate = count / unique_count
             else:
                 actual_rate = 0
             reply_msg += f"  {rarity}: {count}种 ({actual_rate*100:.1f}%，理论{prob*100:.0f}%)\n"
@@ -691,7 +700,7 @@ async def handle_record_help():
     reply_msg += "📊 唱片等级概率:\n"
     for rarity, prob in config.record_rarity_prob.items():
         ds_range = config.record_ds_ranges.get(rarity, (1.0, 5.0))
-        reply_msg += f"  {rarity}: {prob*100:.0f}% (DS: {ds_range[0]}-{ds_range[1]})\n"
+        reply_msg += f"  {rarity}: {prob*100:.1f}% (DS: {ds_range[0]}-{ds_range[1]})\n"
     
     reply_msg += "\n🎯 可用命令:\n"
     reply_msg += "  /draw_record - 单抽一张唱片\n"

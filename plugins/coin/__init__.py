@@ -42,7 +42,7 @@ driver = get_driver()
 # 配置项
 COIN_DIR_NAME = "coin"  # 修改为coin目录
 DEFAULT_COIN_NAME = "银币"
-INITIAL_COINS = 20  # 初始银币数
+INITIAL_COINS = 30  # 初始银币数
 INITIAL_EXP = 0      # 初始经验值
 
 # 用户昵称缓存，避免频繁读取文件
