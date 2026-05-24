@@ -17,7 +17,7 @@ __plugin_meta__ = PluginMetadata(
     name="fishing",
     description="模拟钓鱼插件",
     usage="""
-钓鱼: /fish
+钓鱼: /fish [地点]
 查看钓鱼记录: /fish_record
 查看排行榜: /fish_rank
 添加特殊垃圾: /add_trash 垃圾名称
@@ -27,6 +27,7 @@ __plugin_meta__ = PluginMetadata(
 查看自定义宝藏: /list_treasure
 删除自定义宝藏: /del_treasure 序号
 钓鱼帮助: /fish_help
+当前季节: /season
 """,
     config=Config,
 )
@@ -37,7 +38,8 @@ config = get_plugin_config(Config)
 from nonebot import require
 require("plugins.file_edit")
 require("plugins.coin")
-from plugins.coin import get_coins
+# 注意：这里导入的 get_coins 和 get_user_info 签名必须与您的 coin 插件实际导出一致
+from plugins.coin import get_coins, get_user_info, consume_coins
 from plugins.file_edit import (
     read_csv_file,
     write_csv_file,
@@ -209,22 +211,95 @@ def calculate_fish_value(fish_detail: Dict) -> int:
     value = weight * price_per_jin
     return int(round(value))
 
-def get_random_fish() -> Tuple[str, int]:
-    """随机获取一条鱼，返回鱼的名字和价值"""
+# 季节相关函数
+def get_current_season() -> str:
+    """获取当前季节"""
+    return config.get_current_season()
+
+def get_season_display_name(season: str) -> str:
+    """获取季节的显示名称"""
+    season_names = {
+        "spring": "春季",
+        "summer": "夏季", 
+        "autumn": "秋季",
+        "winter": "冬季"
+    }
+    return season_names.get(season, "未知季节")
+
+# 钓鱼地点相关函数
+def get_fishing_spot_display_name(spot: str) -> str:
+    """获取钓鱼地点的显示名称"""
+    spot_names = {
+        "pond": "池塘",
+        "sea": "海洋", 
+        "river": "河流"
+    }
+    return spot_names.get(spot, "未知地点")
+
+def validate_fishing_spot(spot: str) -> Tuple[bool, str]:
+    """验证钓鱼地点是否有效"""
+    valid_spots = ["pond", "sea", "river"]
+    if spot in valid_spots:
+        return True, spot
+    return False, config.default_fishing_spot
+
+def parse_fishing_spot_arg(arg: str) -> str:
+    """解析钓鱼地点参数"""
+    spot_mapping = {
+        "池塘": "pond", "pond": "pond", "默认": "pond", "普通": "pond",
+        "海钓": "sea", "海洋": "sea", "sea": "sea", "大海": "sea",
+        "河钓": "river", "河流": "river", "river": "river", "小河": "river"
+    }
+    return spot_mapping.get(arg.lower(), config.default_fishing_spot)
+
+# 修改原有的鱼类相关函数
+def get_fish_by_season_and_spot(season: str, spot: str) -> List[Dict]:
+    """根据季节和地点获取符合条件的鱼类"""
+    current_fishes = []
+    
+    for fish in config.fish_details:
+        # 检查栖息地
+        if spot not in fish.habitats:
+            continue
+        
+        # 检查季节
+        if season not in fish.seasons:
+            continue
+        
+        current_fishes.append(fish)
+    
+    return current_fishes
+
+def get_random_fish_by_spot(spot: str) -> Tuple[Optional[str], int]:
+    """根据钓鱼地点随机获取一条鱼，返回鱼的名字和价值"""
+    # 获取当前季节
+    current_season = get_current_season()
+    
+    # 获取符合条件的鱼类
+    available_fishes = get_fish_by_season_and_spot(current_season, spot)
+    
+    if not available_fishes:
+        # 如果没有符合条件的鱼，返回None
+        return None, 0
+    
+    # 计算总概率
+    total_prob = sum(fish.probability for fish in available_fishes)
+    if total_prob <= 0:
+        return None, 0
+    
     # 根据概率随机选择一条鱼
-    total_prob = sum(fish.probability for fish in config.fish_details)
     rand_val = random.random() * total_prob
     cumulative = 0.0
     selected_fish = None
     
-    for fish in config.fish_details:
+    for fish in available_fishes:
         cumulative += fish.probability
         if rand_val <= cumulative:
             selected_fish = fish
             break
     
     if selected_fish is None:
-        selected_fish = config.fish_details[0]
+        return None, 0
     
     # 计算价值
     fish_detail = {
@@ -235,6 +310,62 @@ def get_random_fish() -> Tuple[str, int]:
     value = calculate_fish_value(fish_detail)
     
     return selected_fish.name, value
+
+# 修改钓鱼核心函数
+def do_fishing_by_spot(spot: str) -> Tuple[str, str, str, int]:
+    """根据指定地点执行钓鱼，返回(结果类型, 物品类型, 物品名称, 获得银币)"""
+    # 获取当前地点的概率配置
+    spot_prob = config.fishing_spots.get(spot, config.fishing_spots["pond"])
+    
+    probability_air = spot_prob.get("probability_air", 0.3)
+    probability_trash = spot_prob.get("probability_trash", 0.35)
+    probability_fish = spot_prob.get("probability_fish", 0.3)
+    probability_treasure = spot_prob.get("probability_treasure", 0.05)
+    
+    rand = random.random()
+    
+    if rand < probability_air:
+        return "air", "air", "空军", 0
+    elif rand < probability_air + probability_trash:
+        # 随机获取垃圾
+        trash_item = get_random_trash()
+        trash_type = trash_item.get("type", "base")
+        trash_name = trash_item.get("name", "未知垃圾")
+        
+        # 如果是特殊垃圾，更新其被钓到的次数
+        if trash_type == "special":
+            trash_id = trash_item.get("id")
+            update_special_trash_stats(trash_id)
+        
+        return "trash", trash_type, trash_name, config.trash_normal_value
+    elif rand < probability_air + probability_trash + probability_fish:
+        # 钓到鱼
+        fish_name, fish_value = get_random_fish_by_spot(spot)
+        if fish_name is None:
+            # 如果没有钓到鱼，默认给一个基础值
+            return "fish", "fish", "未知的鱼", config.fish_normal_value
+        
+        return "fish", "fish", fish_name, fish_value
+    else:
+        # 钓到宝藏
+        treasure = get_random_treasure()
+        if treasure is None:
+            # 没有宝藏，默认给一个基础宝藏
+            base_treasure = random.choice(config.base_treasure_items)
+            treasure_name = base_treasure["name"]
+            treasure_value = random.randint(config.treasure_value_range[0], config.treasure_value_range[1])
+            treasure_type = "base"
+        else:
+            treasure_name = treasure["name"]
+            treasure_type = treasure["type"]
+            if treasure_type == "custom":
+                treasure_value = treasure["value"]
+                # 标记为已被钓走
+                mark_treasure_as_fished(treasure["id"], "system")
+            else:
+                treasure_value = treasure["value"]
+        
+        return "treasure", treasure_type, treasure_name, treasure_value
 
 def add_special_trash(trash_name: str, added_by: str, added_nickname: str) -> Tuple[bool, str]:
     """添加特殊垃圾"""
@@ -429,11 +560,30 @@ def load_user_data(user_id: str) -> Dict:
     try:
         data = read_file(user_file)
         if data:
-            return json.loads(data)
-    except:
-        pass
+            user_data = json.loads(data)
+            # 关键：检查并初始化新版本可能缺失的字段，确保向前兼容
+            if "spot_stats" not in user_data:
+                user_data["spot_stats"] = {}
+            # 确保基础字段存在
+            user_data.setdefault("user_id", user_id)
+            user_data.setdefault("total_count", 0)
+            user_data.setdefault("last_fishing_time", [])
+            user_data.setdefault("air_count", 0)
+            user_data.setdefault("fish_count", 0)
+            user_data.setdefault("treasure_count", 0)
+            user_data.setdefault("trash_count", 0)
+            user_data.setdefault("special_trash_count", 0)
+            user_data.setdefault("fish_details", {})
+            user_data.setdefault("trash_details", {})
+            user_data.setdefault("special_trash_details", {})
+            user_data.setdefault("treasure_details", {})
+            user_data.setdefault("total_coin_earned", 0)
+            user_data.setdefault("treasure_owned", [])
+            return user_data
+    except Exception as e:
+        logger.warning(f"加载用户 {user_id} 数据失败或格式旧，使用默认值: {e}")
     
-    # 返回默认数据
+    # 返回默认数据 (新版本完整结构)
     return {
         "user_id": user_id,
         "total_count": 0,  # 总钓鱼次数
@@ -448,7 +598,8 @@ def load_user_data(user_id: str) -> Dict:
         "special_trash_details": {},  # 每种特殊垃圾的详细数量
         "treasure_details": {},  # 每种宝物的详细数量
         "total_coin_earned": 0,  # 通过钓鱼获得的总银币
-        "treasure_owned": []  # 拥有的宝藏（自定义宝藏）
+        "treasure_owned": [],  # 拥有的宝藏（自定义宝藏）
+        "spot_stats": {}  # 新增：按地点统计
     }
 
 def save_user_data(user_id: str, data: Dict) -> bool:
@@ -529,49 +680,6 @@ def update_global_stats():
     
     save_global_data(data)
 
-def do_fishing() -> Tuple[str, str, str, int]:
-    """执行钓鱼，返回(结果类型, 物品类型, 物品名称, 获得银币)"""
-    rand = random.random()
-    
-    if rand < config.probability_air:
-        return "air", "air", "空军", 0
-    elif rand < config.probability_air + config.probability_trash:
-        # 随机获取垃圾
-        trash_item = get_random_trash()
-        trash_type = trash_item.get("type", "base")
-        trash_name = trash_item.get("name", "未知垃圾")
-        
-        # 如果是特殊垃圾，更新其被钓到的次数
-        if trash_type == "special":
-            trash_id = trash_item.get("id")
-            update_special_trash_stats(trash_id)
-        
-        return "trash", trash_type, trash_name, config.trash_normal_value
-    elif rand < config.probability_air + config.probability_trash + config.probability_fish:
-        # 钓到鱼
-        fish_name, fish_value = get_random_fish()
-        return "fish", "fish", fish_name, fish_value
-    else:
-        # 钓到宝藏
-        treasure = get_random_treasure()
-        if treasure is None:
-            # 没有宝藏，默认给一个基础宝藏
-            base_treasure = random.choice(config.base_treasure_items)
-            treasure_name = base_treasure["name"]
-            treasure_value = random.randint(config.treasure_value_range[0], config.treasure_value_range[1])
-            treasure_type = "base"
-        else:
-            treasure_name = treasure["name"]
-            treasure_type = treasure["type"]
-            if treasure_type == "custom":
-                treasure_value = treasure["value"]
-                # 标记为已被钓走
-                mark_treasure_as_fished(treasure["id"], "system")  # 实际用户ID在更新用户数据时设置
-            else:
-                treasure_value = treasure["value"]
-        
-        return "treasure", treasure_type, treasure_name, treasure_value
-
 def update_special_trash_stats(trash_id: int):
     """更新特殊垃圾的统计信息"""
     special_trash = load_special_trash()
@@ -584,12 +692,26 @@ def update_special_trash_stats(trash_id: int):
     
     save_special_trash(special_trash)
 
-def update_user_stats(user_id: str, result_type: str, item_type: str, item_name: str, coin_earned: int) -> Dict:
-    """更新用户统计数据"""
+def update_user_stats(user_id: str, spot: str, result_type: str, item_type: str, item_name: str, coin_earned: int) -> Dict:
+    """更新用户统计数据（增加地点统计）"""
     data = load_user_data(user_id)
     
     # 更新总次数
     data["total_count"] = data.get("total_count", 0) + 1
+    
+    # 关键：安全地更新地点统计，确保 spot_stats 字段存在
+    if "spot_stats" not in data:
+        data["spot_stats"] = {}
+    if spot not in data["spot_stats"]:
+        data["spot_stats"][spot] = {
+            "count": 0,
+            "air_count": 0,
+            "fish_count": 0,
+            "treasure_count": 0,
+            "trash_count": 0
+        }
+    
+    data["spot_stats"][spot]["count"] += 1
     
     # 添加当前时间戳
     now = int(time.time())
@@ -603,39 +725,38 @@ def update_user_stats(user_id: str, result_type: str, item_type: str, item_name:
     # 根据结果类型更新统计数据
     if result_type == "air":
         data["air_count"] = data.get("air_count", 0) + 1
+        data["spot_stats"][spot]["air_count"] += 1
     elif result_type == "trash":
         data["trash_count"] = data.get("trash_count", 0) + 1
+        data["spot_stats"][spot]["trash_count"] += 1
         
         if item_type == "special":
-            # 特殊垃圾统计
             data["special_trash_count"] = data.get("special_trash_count", 0) + 1
-            
             if "special_trash_details" not in data:
                 data["special_trash_details"] = {}
             data["special_trash_details"][item_name] = data["special_trash_details"].get(item_name, 0) + 1
         else:
-            # 基础垃圾统计
             if "trash_details" not in data:
                 data["trash_details"] = {}
             data["trash_details"][item_name] = data["trash_details"].get(item_name, 0) + 1
     elif result_type == "fish":
         data["fish_count"] = data.get("fish_count", 0) + 1
-        # 更新鱼类详细统计
+        data["spot_stats"][spot]["fish_count"] += 1
+        
         if "fish_details" not in data:
             data["fish_details"] = {}
         data["fish_details"][item_name] = data["fish_details"].get(item_name, 0) + 1
     elif result_type == "treasure":
         data["treasure_count"] = data.get("treasure_count", 0) + 1
-        # 更新宝物详细统计
+        data["spot_stats"][spot]["treasure_count"] += 1
+        
         if "treasure_details" not in data:
             data["treasure_details"] = {}
         data["treasure_details"][item_name] = data["treasure_details"].get(item_name, 0) + 1
         
-        # 如果是自定义宝藏，添加到用户拥有的宝藏列表
         if item_type == "custom":
             if "treasure_owned" not in data:
                 data["treasure_owned"] = []
-            # 记录宝藏信息
             treasure_info = {
                 "name": item_name,
                 "value": coin_earned,
@@ -649,39 +770,40 @@ def update_user_stats(user_id: str, result_type: str, item_type: str, item_name:
     else:
         raise Exception("保存用户数据失败")
 
-def get_result_message(result_type: str, item_type: str, item_name: str, coin_earned: int, user_data: Dict) -> str:
-    """生成结果消息"""
+def get_result_message(spot: str, result_type: str, item_type: str, item_name: str, coin_earned: int, user_data: Dict) -> str:
+    """生成结果消息（增加地点信息）"""
+    spot_name = get_fishing_spot_display_name(spot)
+    
     messages = {
         "air": [
-            "哎呀，什么都没钓到！水面平静得像镜子一样。",
-            "鱼饵被吃光了，但鱼却没上钩。",
-            "今天的鱼儿似乎都很聪明，一条都没钓到。",
-            "渔线轻轻动了一下，但提起时却空无一物。",
-            "耐心等待了很久，结果还是一无所获。"
+            f"在{spot_name}钓鱼，什么都没钓到！水面平静得像镜子一样。",
+            f"在{spot_name}钓鱼，鱼饵被吃光了，但鱼却没上钩。",
+            f"今天{spot_name}的鱼儿似乎都很聪明，一条都没钓到。",
+            f"在{spot_name}耐心等待了很久，结果还是一无所获。"
         ],
         "trash_base": [
-            f"钓到了一个{item_name}，真是让人哭笑不得。",
-            f"没想到钓上来的竟然是{item_name}，看来水里有不少垃圾。",
-            f"收获了一个{item_name}，虽然不是鱼，但也算是清理了水域。",
-            f"提起钓竿，发现钩子上挂着{item_name}，有点失望。"
+            f"在{spot_name}钓到了一个{item_name}，真是让人哭笑不得。",
+            f"在{spot_name}钓鱼，没想到钓上来的竟然是{item_name}，看来水里有不少垃圾。",
+            f"在{spot_name}收获了一个{item_name}，虽然不是鱼，但也算是清理了水域。",
+            f"在{spot_name}提起钓竿，发现钩子上挂着{item_name}，有点失望。"
         ],
         "trash_special": [
-            f"🎉 喜报：钓到了群友搬的石！\n{item_name}",
-            f"钓到了一个{item_name}，真是让人哭笑不得。",
-            f"🎉 好消息！钓到了{item_name}！",
-            f"🎉 钓到了创意垃圾：\n{item_name}"
+            f"🎉 在{spot_name}钓到了群友搬的石！\n{item_name}",
+            f"在{spot_name}钓到了一个{item_name}，真是让人哭笑不得。",
+            f"🎉 在{spot_name}好消息！钓到了{item_name}！",
+            f"🎉 在{spot_name}钓到了创意垃圾：\n{item_name}"
         ],
         "fish": [
-            f"钓到了一条{item_name}！今晚可以加餐了！",
-            f"一条漂亮的{item_name}上钩了！收获不错！",
-            f"经过耐心等待，终于钓到了一条{item_name}！",
-            f"{item_name}在阳光下闪闪发光，真是个不错的收获！"
+            f"在{spot_name}钓到了一条{item_name}！今晚可以加餐了！",
+            f"在{spot_name}钓鱼，一条漂亮的{item_name}上钩了！收获不错！",
+            f"在{spot_name}经过耐心等待，终于钓到了一条{item_name}！",
+            f"在{spot_name}钓上鱼了，{item_name}在阳光下闪闪发光，真是个不错的收获！"
         ],
         "treasure": [
-            f"哇！竟然钓到了{item_name}！发大财了！",
-            f"金光闪闪的{item_name}！这可是稀有宝物！",
-            f"不敢相信！钓竿竟然勾住了{item_name}！",
-            f"传说中的{item_name}被你钓到了！运气爆棚！"
+            f"哇！竟然在{spot_name}钓到了{item_name}！发大财了！",
+            f"在{spot_name}钓上了金光闪闪的{item_name}！这可是稀有宝物！",
+            f"在{spot_name}钓到东西了，不敢相信！钓竿竟然勾住了{item_name}！",
+            f"传说中的{item_name}被你在{spot_name}钓到了！运气爆棚！"
         ]
     }
     
@@ -692,7 +814,7 @@ def get_result_message(result_type: str, item_type: str, item_name: str, coin_ea
         msg_type = "trash_special" if item_type == "special" else "trash_base"
     elif result_type == "fish":
         msg_type = "fish"
-    else:  # treasure
+    else:
         msg_type = "treasure"
     
     # 获取随机消息
@@ -703,7 +825,12 @@ def get_result_message(result_type: str, item_type: str, item_name: str, coin_ea
         base_msg += f"\n💰 获得银币: {coin_earned}枚"
     
     # 添加统计信息
+    current_season = get_current_season()
+    season_name = get_season_display_name(current_season)
+    
     stats_msg = f"\n\n📊 本次钓鱼结果：{item_name}"
+    stats_msg += f"\n📍 钓鱼地点：{spot_name}"
+    stats_msg += f"\n🍂 当前季节：{season_name}"
     
     if result_type == "air":
         stats_msg += f"\n🎣 空军次数：{user_data.get('air_count', 0)}次"
@@ -741,26 +868,52 @@ def get_result_message(result_type: str, item_type: str, item_name: str, coin_ea
 fish = on_command("fish", aliases={"钓鱼", "钓"}, priority=5, block=True)
 
 @fish.handle()
-async def handle_fish(event: Event):
-    """处理钓鱼命令"""
+async def handle_fish(event: Event, message: Message = CommandArg()):
+    """处理钓鱼命令，支持指定地点"""
     user_id = get_user_id(event)
     nickname = get_user_nickname(event)
     message_id = event.message_id if hasattr(event, 'message_id') else None
+    
+    # 解析参数
+    arg_text = message.extract_plain_text().strip()
+    
+    # 确定钓鱼地点
+    if arg_text:
+        spot = parse_fishing_spot_arg(arg_text)
+    else:
+        spot = config.default_fishing_spot
+    
+    # 验证钓鱼地点
+    is_valid, final_spot = validate_fishing_spot(spot)
+    spot_name = get_fishing_spot_display_name(final_spot)
     
     # 检查是否可以钓鱼
     can_fish_result, msg = can_fish(user_id)
     if not can_fish_result:
         await fish.finish(msg)
     
+    # 如果是海钓，检查是否需要额外费用
+    extra_cost = 0
+    if final_spot == "sea":
+        extra_cost = config.sea_fishing_extra_cost
+        coin_balance, exp, _ = await get_user_info(user_id)
+        if coin_balance < extra_cost:
+            await fish.finish(f"💰 海钓需要额外消耗{extra_cost}银币，当前只有{coin_balance}银币")
+        
+        # 消耗额外费用
+        result = await consume_coins(user_id, extra_cost, 0, nickname)
+        if result[0] is None:
+            await fish.finish("❌ 银币消费失败，无法进行海钓")
+    
     # 更新全局统计
     update_global_stats()
     
     # 执行钓鱼
-    result_type, item_type, item_name, coin_earned = do_fishing()
+    result_type, item_type, item_name, coin_earned = do_fishing_by_spot(final_spot)
     
     try:
         # 更新用户数据
-        user_data = update_user_stats(user_id, result_type, item_type, item_name, coin_earned)
+        user_data = update_user_stats(user_id, final_spot, result_type, item_type, item_name, coin_earned)
         
         # 更新全局今日统计
         global_data = load_global_data()
@@ -773,9 +926,31 @@ async def handle_fish(event: Event):
             global_data["today_treasure_count"] = global_data.get("today_treasure_count", 0) + 1
         
         save_global_data(global_data)
-        await get_coins(user_id,coin_earned)
+        
+        # 关键：向后兼容的银币发放逻辑
+        # 先尝试新版本的 get_coins 调用 (带 exp_multiple 和 nickname)
+        # 如果失败，回退到旧版本的调用 (只有 user_id 和 amount)
+        exp_multiple = config.sea_fishing_exp_multiple if final_spot == "sea" else 1.0
+        try:
+            # 尝试新版本调用
+            await get_coins(user_id, coin_earned, exp_multiple, nickname)
+        except TypeError as e:
+            if "positional arguments" in str(e) or "takes" in str(e):
+                # 很可能是参数数量不匹配，尝试旧版本调用
+                logger.info(f"检测到旧版 coin 插件，使用兼容模式调用 get_coins")
+                await get_coins(user_id, coin_earned)
+            else:
+                # 其他错误，继续抛出
+                raise
+        
         # 生成结果消息
-        result_msg = get_result_message(result_type, item_type, item_name, coin_earned, user_data)
+        result_msg = get_result_message(final_spot, result_type, item_type, item_name, coin_earned, user_data)
+        
+        # 添加额外提示
+        if final_spot == "sea":
+            result_msg += f"\n\n🌊 海钓额外消耗：{extra_cost}银币"
+            result_msg += f"\n🌟 海钓经验倍数：{exp_multiple}倍"
+        
         if message_id:
             result_msg = MessageSegment.reply(message_id) + result_msg
         await fish.send(result_msg)
@@ -952,6 +1127,14 @@ async def handle_fish_record(event: Event):
     msg += MessageSegment.text(f"钓到宝物：{data.get('treasure_count', 0)}次\n")
     msg += MessageSegment.text(f"钓鱼总收益：{data.get('total_coin_earned', 0)}银币\n\n")
     
+    # 显示地点统计（如果存在）
+    if data.get("spot_stats"):
+        msg += MessageSegment.text("📍 地点统计：\n")
+        for spot, stats in data["spot_stats"].items():
+            spot_name = get_fishing_spot_display_name(spot)
+            msg += MessageSegment.text(f"  {spot_name}：{stats.get('count', 0)}次\n")
+        msg += MessageSegment.text("\n")
+    
     # 拥有的自定义宝藏
     if data.get("treasure_owned"):
         msg += MessageSegment.text("💰 拥有的自定义宝藏：\n")
@@ -1024,34 +1207,88 @@ async def handle_fish_rank(event: Event):
     
     await fish_rank.send(msg)
 
+# 新增命令：查看当前季节
+season_cmd = on_command("season", aliases={"季节", "当前季节"}, priority=5, block=True)
+
+@season_cmd.handle()
+async def handle_season(event: Event):
+    """处理查看季节命令"""
+    current_season = get_current_season()
+    season_name = get_season_display_name(current_season)
+    
+    # 获取当前月份
+    current_month = datetime.now().month
+    month_name = f"{current_month}月"
+    
+    # 获取当前季节可钓的鱼类
+    spots = ["pond", "sea", "river"]
+    season_fishes = {}
+    
+    for spot in spots:
+        fishes = get_fish_by_season_and_spot(current_season, spot)
+        if fishes:
+            spot_name = get_fishing_spot_display_name(spot)
+            # 只显示前10种
+            fish_names = [fish.name for fish in fishes[:10]]
+            if len(fishes) > 10:
+                fish_names.append(f"...等{len(fishes)}种")
+            season_fishes[spot_name] = fish_names
+    
+    # 构建消息
+    msg = MessageSegment.text(f"📅 当前季节：{season_name} ({month_name})\n")
+    msg += MessageSegment.text("=" * 20 + "\n")
+    
+    if season_fishes:
+        msg += MessageSegment.text("🎣 本季特色鱼类：\n")
+        for spot_name, fish_list in season_fishes.items():
+            if fish_list:
+                msg += MessageSegment.text(f"📍 {spot_name}：{', '.join(fish_list)}\n")
+    
+    msg += MessageSegment.text("\n🌊 钓鱼地点说明：\n")
+    msg += MessageSegment.text("  /fish - 默认池塘钓鱼\n")
+    msg += MessageSegment.text("  /fish sea - 海钓（需要额外费用）\n")
+    msg += MessageSegment.text("  /fish river - 河钓\n")
+    
+    await season_cmd.send(msg)
+
 # 帮助命令
 fish_help = on_command("fish_help", aliases={"钓鱼帮助"}, priority=5, block=True)
 
 @fish_help.handle()
 async def handle_fish_help():
     """显示钓鱼帮助"""
+    current_season = get_current_season()
+    season_name = get_season_display_name(current_season)
+    
     msg = MessageSegment.text("🎣 钓鱼插件使用说明\n")
     msg += MessageSegment.text("=" * 20 + "\n")
+    msg += MessageSegment.text(f"📅 当前季节：{season_name}\n\n")
+    
     msg += MessageSegment.text(f"🎯 命令列表：\n")
-    msg += MessageSegment.text(f"  /fish - 进行一次钓鱼\n")
+    msg += MessageSegment.text(f"  /fish - 池塘钓鱼\n")
+    msg += MessageSegment.text(f"  /fish 海钓 - 海洋钓鱼（需额外费用）\n")
+    msg += MessageSegment.text(f"  /fish 河钓 - 河流钓鱼\n")
+    msg += MessageSegment.text(f"  /season - 查看当前季节\n")
     msg += MessageSegment.text(f"  /fish_record - 查看个人钓鱼记录\n")
     msg += MessageSegment.text(f"  /fish_rank - 查看钓鱼排行榜\n")
     msg += MessageSegment.text(f"  /add_trash 名称 - 添加特殊垃圾\n")
     msg += MessageSegment.text(f"  /add_treasure 名称 价格 - 添加自定义宝藏(20-100)\n")
+    
+    # 显示各地点概率
     '''
-    msg += MessageSegment.text(f"  /list_treasure - 查看自定义宝藏\n")
-    msg += MessageSegment.text(f"  /del_treasure 序号 - 删除自定义宝藏\n")
-    msg += MessageSegment.text(f"  /list_trash - 查看所有特殊垃圾\n")
-    msg += MessageSegment.text(f"  /del_trash 序号 - 删除特殊垃圾\n")
-    msg += MessageSegment.text(f"  /fish_help - 显示此帮助\n\n")
-    msg += MessageSegment.text(f"📊 钓鱼概率：\n")
-    msg += MessageSegment.text(f"  空军：{config.probability_air*100:.0f}%\n")
-    msg += MessageSegment.text(f"  垃圾：{config.probability_trash*100:.0f}%\n")
-    msg += MessageSegment.text(f"  鱼：{config.probability_fish*100:.0f}%\n")
-    msg += MessageSegment.text(f"  宝物：{config.probability_treasure*100:.0f}%\n\n")
+    msg += MessageSegment.text(f"\n📊 各地点钓鱼概率：\n")
+    for spot, probs in config.fishing_spots.items():
+        spot_name = get_fishing_spot_display_name(spot)
+        msg += MessageSegment.text(f"  {spot_name}：")
+        msg += MessageSegment.text(f"鱼{probs.get('probability_fish', 0)*100:.0f}% ")
+        msg += MessageSegment.text(f"垃圾{probs.get('probability_trash', 0)*100:.0f}% ")
+        msg += MessageSegment.text(f"宝藏{probs.get('probability_treasure', 0)*100:.0f}%\n")
     '''
-    msg += MessageSegment.text(f"⏰ 限制说明：\n")
+    msg += MessageSegment.text(f"\n⏰ 限制说明：\n")
     msg += MessageSegment.text(f"  每人每小时最多可钓鱼{config.fishing_limit_per_hour}次\n")
+    if config.sea_fishing_extra_cost > 0:
+        msg += MessageSegment.text(f"  海钓额外消耗：{config.sea_fishing_extra_cost}银币/次\n")
+        msg += MessageSegment.text(f"  海钓经验倍数：{config.sea_fishing_exp_multiple}倍\n")
     msg += MessageSegment.text(f"  特殊垃圾数量限制：{config.max_special_trash_count}个\n")
     msg += MessageSegment.text(f"  自定义宝藏数量限制：{config.max_custom_treasure_count}个\n")
     
