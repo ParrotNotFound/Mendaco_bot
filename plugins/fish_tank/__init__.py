@@ -7,6 +7,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
     MessageSegment
 )
+from nonebot.rule import Rule
 from nonebot.params import CommandArg, EventPlainText
 from nonebot.log import logger
 import random
@@ -183,11 +184,11 @@ def save_tank_data(group_id: str, data: Dict) -> bool:
 def calculate_fish_lifetime(value: int) -> Tuple[float, float]:
     """
     计算鱼的保存时间（小时）
-    公式: ((value)^0.5) * 24 ± 16 小时
+    公式: ((value)^0.6) * 24 ± 16 小时
     
     返回: (最小保存时间, 最大保存时间)
     """
-    base_time = math.sqrt(value) * 24
+    base_time = math.pow(value, 0.6) * 24
     min_time = max(1, base_time - 16)  # 至少1小时
     max_time = base_time + 16
     
@@ -203,20 +204,46 @@ def generate_fish_expire_time(value: int) -> datetime:
     
     expire_time = datetime.now() + timedelta(hours=lifetime_hours)
     return expire_time
+def remove_background_traditional(image_bytes: bytes) -> Optional[Image.Image]:
+    """
+    使用传统PIL方法进行简单背景移除
+    这种方法适用于简单背景的图片
+    """
+    try:
+        # 读取图片
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        
+        # 获取数据
+        datas = img.getdata()
+        
+        # 创建新图片数据
+        new_data = []
+        
+        # 阈值设置：移除接近白色的背景
+        for item in datas:
+            # 判断是否为背景（接近白色）
+            if item[0] > 200 and item[1] > 200 and item[2] > 200:
+                # 设置为完全透明
+                new_data.append((255, 255, 255, 0))
+            else:
+                new_data.append(item)
+        
+        # 更新图片数据
+        img.putdata(new_data)
+        
+        logger.info("使用传统方法成功移除背景")
+        return img
+    except Exception as e:
+        logger.error(f"传统方法移除背景失败: {e}")
+        return None
 
 def remove_background(image_bytes: bytes) -> Optional[Image.Image]:
     """
-    使用rembg移除图片背景
-    
-    参数:
-        image_bytes: 图片字节数据
-    
-    返回:
-        移除背景后的PIL Image对象，或None
+    使用rembg移除图片背景，失败时回退到PIL传统方法
     """
     if not REMBG_AVAILABLE or remove is None:
-        logger.error("rembg不可用，无法移除背景")
-        return None
+        logger.error("rembg不可用，尝试传统方法")
+        return remove_background_traditional(image_bytes)
     
     try:
         # 移除背景
@@ -232,8 +259,9 @@ def remove_background(image_bytes: bytes) -> Optional[Image.Image]:
         
         return result_image
     except Exception as e:
-        logger.error(f"移除背景失败: {e}")
-        return None
+        logger.error(f"rembg移除背景失败: {e}，尝试传统方法")
+        return remove_background_traditional(image_bytes)
+
 
 def clean_expired_fishes(tank_data: Dict) -> Tuple[List[Dict], List[Dict], int]:
     """
@@ -351,7 +379,24 @@ async def handle_add_fish(event: GroupMessageEvent, args: Message = CommandArg()
     await add_fish_cmd.finish(f"🎣 请发送鱼的图片，我将在{config.image_wait_timeout}秒内接收并处理\n💡 注意：图片将自动移除背景")
 
 # 处理用户发送的图片
-@on_message(priority=10, block=False)
+def check_image_and_waiting(event: MessageEvent) -> bool:
+    """检查消息是否包含图片且发送者在等待状态"""
+    # 检查用户是否在等待状态
+    user_id = get_user_id(event)
+    if user_id not in waiting_users:
+        return False
+    
+    # 检查消息是否包含图片
+    msg = event.get_message()
+    for segment in msg:
+        if segment.type == "image":
+            return True
+    
+    return False
+
+# 使用带规则的装饰器
+tank_add_photo_cmd = on_message(rule=Rule(check_image_and_waiting), priority=10, block=False)
+@tank_add_photo_cmd.handle()
 async def handle_image_message(event: MessageEvent):
     """处理用户发送的图片"""
     user_id = get_user_id(event)
@@ -389,7 +434,8 @@ async def handle_image_message(event: MessageEvent):
                             fish_image = remove_background(image_bytes)
                             
                             if fish_image is None:
-                                await event.reply("❌ 移除背景失败，请尝试更换图片")
+                                # 使用响应器发送回复消息
+                                await tank_add_photo_cmd.send("❌ 移除背景失败，请尝试更换图片")
                                 del waiting_users[user_id]
                                 return
                             
@@ -419,12 +465,13 @@ async def handle_image_message(event: MessageEvent):
                                     message_chain.append(MessageSegment.image(img_base64))
                                     message_chain.append(MessageSegment.text("\n" + result_msg))
                                     
-                                    await event.reply(message_chain)
+                                    # 使用响应器发送消息
+                                    await tank_add_photo_cmd.send(message_chain)
                                 except Exception as e:
                                     logger.error(f"发送图片消息失败: {e}")
-                                    await event.reply(result_msg)
+                                    await tank_add_photo_cmd.send(result_msg)
                             else:
-                                await event.reply(result_msg)
+                                await tank_add_photo_cmd.send(result_msg)
                             
                             # 清理等待状态
                             del waiting_users[user_id]
@@ -432,7 +479,7 @@ async def handle_image_message(event: MessageEvent):
                             
             except Exception as e:
                 logger.error(f"处理图片失败: {e}")
-                await event.reply(f"❌ 处理图片失败: {str(e)}")
+                await tank_add_photo_cmd.send(f"❌ 处理图片失败: {str(e)}")
                 del waiting_users[user_id]
                 return
     
@@ -558,7 +605,7 @@ async def handle_tank(event: GroupMessageEvent):
         #     info_msg += f"\n🧹 自动清理了{expired_count}条过期鱼"
         message_chain.append(MessageSegment.text(info_msg))
         
-        await tank_cmd.finish(message_chain)
+        await tank_cmd.send(message_chain)
         
     except Exception as e:
         logger.error(f"渲染鱼缸失败: {e}")
@@ -734,8 +781,8 @@ async def handle_tank_help():
     help_msg += f"  限制: 单次最多{config.max_fish_per_add}条\n\n"
     
     help_msg += f"💰 鱼的保存时间:\n"
-    help_msg += f"  公式: 价值^{{0.5}}×24±16小时\n"
-    help_msg += f"  示例: 价值9的鱼保存约72±16小时\n\n"
+    help_msg += f"  公式: 价值^{{0.6}}×24±16小时\n"
+    # help_msg += f"  示例: 价值9的鱼保存约72±16小时\n\n"
     
     help_msg += f"🖼️ 鱼的大小:\n"
     help_msg += f"  公式: 鱼缸长度 × (价值^{{0.3}}) × 0.075\n"
