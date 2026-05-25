@@ -790,7 +790,7 @@ def get_result_message(spot: str, result_type: str, item_type: str, item_name: s
         "trash_special": [
             f"🎉 在{spot_name}钓到了群友搬的石！\n{item_name}",
             f"在{spot_name}钓到了一个{item_name}，真是让人哭笑不得。",
-            f"🎉 在{spot_name}好消息！钓到了{item_name}！",
+            f"🎉 好消息！在{spot_name}钓到了{item_name}！",
             f"🎉 在{spot_name}钓到了创意垃圾：\n{item_name}"
         ],
         "fish": [
