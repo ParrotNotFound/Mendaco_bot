@@ -21,6 +21,7 @@ __plugin_meta__ = PluginMetadata(
 签到记录: /sign_record
 月度统计: /sign_month
 签到帮助: /sign_help
+管理员补偿: /compensate <额度> [理由]  (仅管理员1287428141)
 """,
     config=SignConfig,
 )
@@ -46,6 +47,7 @@ SIGN_ROOT = "sign"
 DATA_FILES = {
     "users": f"{SIGN_ROOT}/users",  # 用户签到数据目录
     "global": f"{SIGN_ROOT}/global.json",  # 全局统计数据文件
+    "compensations": f"{SIGN_ROOT}/compensations.json",  # 补偿记录文件
 }
 
 # 初始化文件目录
@@ -98,6 +100,7 @@ def load_user_data(user_id: str) -> Dict:
         "sign_history": {},  # 签到历史记录，格式：YYYY-MM: [日期列表]
         "total_coins_earned": 0,  # 通过签到获得的总银币
         "special_bonus_count": 0,  # 获得特殊奖励的次数
+        "claimed_compensations": [],  # 已领取的补偿ID列表
     }
 
 def save_user_data(user_id: str, data: Dict) -> bool:
@@ -136,6 +139,67 @@ def save_global_data(data: Dict) -> bool:
         logger.error(f"保存全局数据失败: {e}")
         return False
 
+# ==================== 补偿系统相关函数 ====================
+def load_compensations() -> Dict:
+    """加载所有补偿记录"""
+    try:
+        data = read_file(DATA_FILES["compensations"])
+        if data:
+            comp_data = json.loads(data)
+            # 兼容旧数据格式
+            if "compensations" not in comp_data:
+                comp_data = {"compensations": comp_data if isinstance(comp_data, list) else [], "next_id": 1}
+            if "next_id" not in comp_data:
+                comp_data["next_id"] = max([c["id"] for c in comp_data["compensations"]], default=0) + 1
+            return comp_data
+    except:
+        pass
+    return {"compensations": [], "next_id": 1}
+
+def save_compensations(comp_data: Dict) -> bool:
+    """保存补偿记录"""
+    try:
+        write_file(DATA_FILES["compensations"], json.dumps(comp_data, ensure_ascii=False, indent=2))
+        return True
+    except Exception as e:
+        logger.error(f"保存补偿数据失败: {e}")
+        return False
+
+def add_compensation(amount: int, reason: str) -> Tuple[bool, int, str]:
+    """添加新的补偿记录，返回(是否成功, 补偿ID, 错误信息)"""
+    if amount <= 0:
+        return False, 0, "补偿额度必须为正整数"
+    
+    comp_data = load_compensations()
+    now = datetime.now()
+    compensation = {
+        "id": comp_data["next_id"],
+        "amount": amount,
+        "reason": reason,
+        "start_time": now.isoformat(),
+        "end_time": (now + timedelta(days=5)).isoformat()
+    }
+    comp_data["compensations"].append(compensation)
+    comp_data["next_id"] += 1
+    if save_compensations(comp_data):
+        return True, compensation["id"], ""
+    return False, 0, "保存补偿记录失败"
+
+def get_active_compensations() -> List[Dict]:
+    """获取所有有效的补偿（当前时间在有效期内）"""
+    comp_data = load_compensations()
+    now = datetime.now()
+    active = []
+    for comp in comp_data["compensations"]:
+        try:
+            end_time = datetime.fromisoformat(comp["end_time"])
+            if now <= end_time:
+                active.append(comp)
+        except:
+            continue
+    return active
+
+# ==================== 签到核心函数 ====================
 def check_special_date() -> Tuple[bool, Dict]:
     """检查今天是否是特殊日期"""
     today_str = datetime.now().strftime("%m-%d")
@@ -213,6 +277,54 @@ sign_cmd = on_command("sign", aliases={"签到", "打卡", "checkin"}, priority=
 sign_record_cmd = on_command("sign_record", aliases={"签到记录", "我的签到"}, priority=5, block=True)
 sign_month_cmd = on_command("sign_month", aliases={"月度签到", "月签到统计"}, priority=5, block=True)
 sign_help_cmd = on_command("sign_help", aliases={"签到帮助"}, priority=5, block=True)
+compensate_cmd = on_command("compensate", aliases={"补偿", "系统补偿"}, priority=5, block=True)
+
+# ==================== 补偿处理核心逻辑 ====================
+async def process_compensations(user_id: str, user_data: Dict, nickname: str) -> Tuple[str, int]:
+    """
+    处理用户所有未领取的补偿
+    返回 (补偿信息字符串, 总补偿银币数)
+    """
+    # 获取所有有效补偿
+    active_comps = get_active_compensations()
+    if not active_comps:
+        return "", 0
+    
+    # 获取已领取的补偿ID集合
+    claimed = set(user_data.get("claimed_compensations", []))
+    
+    # 筛选未领取的补偿
+    pending = [comp for comp in active_comps if comp["id"] not in claimed]
+    if not pending:
+        return "", 0
+    
+    # 计算总补偿额并生成消息
+    total_amount = 0
+    comp_details = []
+    for comp in pending:
+        total_amount += comp["amount"]
+        comp_details.append(f"  • {comp['amount']}银币: {comp['reason']}")
+    
+    # 发放银币（不获得经验）
+    if total_amount > 0:
+        new_coins, _ = await get_coins(user_id, total_amount, 0, nickname)
+        logger.info(f"用户 {user_id}({nickname}) 领取补偿 {total_amount} 银币，补偿列表: {[c['id'] for c in pending]}")
+        
+        # 更新已领取记录
+        if "claimed_compensations" not in user_data:
+            user_data["claimed_compensations"] = []
+        for comp in pending:
+            if comp["id"] not in user_data["claimed_compensations"]:
+                user_data["claimed_compensations"].append(comp["id"])
+        
+        # 保存用户数据
+        save_user_data(user_id, user_data)
+        
+        # 生成补偿信息文本
+        info = f"\n\n🎁 【系统补偿】共领取 {total_amount} 银币:\n" + "\n".join(comp_details)
+        return info, total_amount
+    
+    return "", 0
 
 @sign_cmd.handle()
 async def handle_sign(event: MessageEvent):
@@ -223,6 +335,9 @@ async def handle_sign(event: MessageEvent):
     
     # 加载用户数据
     user_data = load_user_data(user_id)
+    
+    # 先处理补偿（无论今天是否已签到，都可以领取补偿）
+    compensation_msg, compensation_coins = await process_compensations(user_id, user_data, nickname)
     
     # 检查今天是否已经签到
     if user_data.get("last_sign_date") == today:
@@ -240,6 +355,9 @@ async def handle_sign(event: MessageEvent):
         reply_msg += f"🌟 当前经验: {exp}点\n"
         reply_msg += f"📅 已连续签到: {user_data.get('consecutive_days', 0)}天\n"
         reply_msg += f"⏰ 下次可签到: {wait_hours}小时{wait_minutes}分钟后"
+        
+        if compensation_msg:
+            reply_msg += compensation_msg
         
         message_id = event.message_id if hasattr(event, 'message_id') else None
         if message_id:
@@ -352,6 +470,10 @@ async def handle_sign(event: MessageEvent):
     reply_msg += f"💰 累计签到奖励: {user_data['total_coins_earned']}银币\n\n"
     reply_msg += f"💳 当前银币: {new_coins}枚\n"
     reply_msg += f"🌟 当前经验: {new_exp}点"
+    
+    # 添加补偿信息
+    if compensation_msg:
+        reply_msg += compensation_msg
     
     # 检查是否是本月最后一天
     today_date = datetime.now()
@@ -531,14 +653,57 @@ async def handle_sign_help():
     reply_msg += "  /sign - 每日签到\n"
     reply_msg += "  /sign_record - 查看签到记录\n"
     reply_msg += "  /sign_month [YYYY-MM] - 查看指定月份签到统计\n"
-    reply_msg += "  /sign_help - 显示此帮助\n\n"
+    reply_msg += "  /sign_help - 显示此帮助\n"
+    reply_msg += "  /compensate <额度> [理由] - (管理员)发布系统维护补偿\n\n"
     
     reply_msg += "📝 注意事项:\n"
     reply_msg += "  1. 每天只能签到一次\n"
     reply_msg += "  2. 连续签到中断后会重新计算\n"
     reply_msg += "  3. 每月最后一天自动发放全勤奖励\n"
+    reply_msg += "  4. 管理员发布的补偿在5天内有效，每次签到自动领取\n"
     
     await sign_help_cmd.finish(reply_msg)
+
+@compensate_cmd.handle()
+async def handle_compensate(event: MessageEvent, args: Message = CommandArg()):
+    """管理员发布系统维护补偿"""
+    # 管理员ID检查
+    ADMIN_ID = "1287428141"
+    user_id = get_user_id(event)
+    if user_id != ADMIN_ID:
+        await compensate_cmd.finish("❌ 权限不足，只有管理员可以发布补偿。")
+    
+    # 解析参数
+    arg_text = args.extract_plain_text().strip()
+    if not arg_text:
+        await compensate_cmd.finish("❌ 用法: /compensate <额度> [理由]\n例如: /compensate 100 服务器维护补偿")
+    
+    parts = arg_text.split(maxsplit=1)
+    try:
+        amount = int(parts[0])
+    except ValueError:
+        await compensate_cmd.finish("❌ 补偿额度必须是正整数")
+    
+    if amount <= 0:
+        await compensate_cmd.finish("❌ 补偿额度必须大于0")
+    
+    reason = parts[1] if len(parts) > 1 else "系统维护补偿"
+    
+    # 添加补偿
+    success, comp_id, error = add_compensation(amount, reason)
+    if not success:
+        await compensate_cmd.finish(f"❌ 发布补偿失败: {error}")
+    
+    # 计算有效期截止时间
+    end_time = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+    reply_msg = f"✅ 系统补偿已发布！\n"
+    reply_msg += f"💰 补偿额度: {amount}银币\n"
+    reply_msg += f"📝 补偿理由: {reason}\n"
+    reply_msg += f"⏰ 有效期: 5天 (截止 {end_time})\n"
+    reply_msg += f"🆔 补偿ID: {comp_id}\n\n"
+    reply_msg += f"所有用户在有效期内首次使用 /sign 将自动领取该补偿（每人仅一次）。"
+    
+    await compensate_cmd.finish(reply_msg)
 
 # 插件启动时的初始化
 @driver.on_startup

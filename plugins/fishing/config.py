@@ -29,7 +29,8 @@ class Config(BaseModel):
     
     # 默认钓鱼地点
     default_fishing_spot: str = Field("pond", description="默认钓鱼地点：pond(池塘), sea(海钓), river(河钓)")
-    
+      # 是否将文字转为图片发送
+    send_photo: bool = Field(True, description="是否将钓鱼结果以图片形式发送（白底，支持emoji）")
     # 获取当前季节
     def get_current_season(self) -> str:
         """根据当前月份获取季节"""
