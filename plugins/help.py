@@ -15,9 +15,10 @@ version = on_command('about')
 
 @version.handle()
 async def handle_function(event: Event):
-    msg = '''Mendaco_bot v0.5.0
+    msg = '''Mendaco_bot v0.5.1
     钓鱼功能大改，新增季节与海钓机制；
-    新增鱼缸功能'''
+    新增鱼缸功能（默认关闭，需管理员手动开启）
+    新增一次多钓功能'''
     await version.send(msg)
 
 helps = on_command('help')

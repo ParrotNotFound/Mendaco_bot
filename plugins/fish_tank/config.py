@@ -4,7 +4,10 @@ from pathlib import Path
 
 class TankConfig(BaseModel):
     """鱼缸插件配置"""
-    
+    tank_open: bool = Field(
+        False,  # 默认关闭
+        description="是否开启鱼缸功能"
+    )
     # 鱼的价值范围
     fish_value_range: Tuple[int, int] = Field(
         (3, 50),  # 每条鱼的价值范围

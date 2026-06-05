@@ -326,7 +326,8 @@ async def handle_add_fish(event: GroupMessageEvent, args: Message = CommandArg()
     """处理添加鱼命令"""
     if not REMBG_AVAILABLE:
         await add_fish_cmd.finish("❌ 鱼缸插件功能不完整，无法处理图片背景移除")
-    
+    if(not config.tank_open):
+        await add_fish_cmd.finish("❌ 鱼缸功能未开启，请联系管理员")
     user_id = get_user_id(event)
     group_id = get_group_id(event)
     
@@ -492,6 +493,8 @@ async def add_fish_to_tank(user_id: str, group_id: str, value: int, count: int,
     
     返回: (是否成功, 结果消息, 处理后的鱼图片)
     """
+    if(not config.tank_open):
+        await add_fish_cmd.finish("❌ 鱼缸功能未开启，请联系管理员")
     # 消耗银币
     result = await consume_coins(user_id, total_value, 0, "")
     if result[0] is None:
@@ -560,6 +563,8 @@ async def add_fish_to_tank(user_id: str, group_id: str, value: int, count: int,
 @tank_cmd.handle()
 async def handle_tank(event: GroupMessageEvent):
     """处理查看鱼缸命令"""
+    if(not config.tank_open):
+        await tank_cmd.finish("❌ 鱼缸功能未开启，请联系管理员")
     group_id = get_group_id(event)
     
     if not group_id:
@@ -770,7 +775,8 @@ async def handle_clean_tank(event: GroupMessageEvent):
 async def handle_tank_help():
     """显示鱼缸帮助"""
     min_val, max_val = config.fish_value_range
-    
+    if (not config.tank_open):
+        await tank_help_cmd.finish("❌ 鱼缸功能未开启，请联系管理员")
     help_msg = f"🐟 群聊鱼缸系统帮助\n"
     help_msg += "=" * 20 + "\n\n"
     
