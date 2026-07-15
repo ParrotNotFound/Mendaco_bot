@@ -15,22 +15,23 @@ version = on_command('about')
 
 @version.handle()
 async def handle_function(event: Event):
-    msg = '''Mendaco_bot v0.5.1
-    钓鱼功能大改，新增季节与海钓机制；
-    新增鱼缸功能（默认关闭，需管理员手动开启）
-    新增一次多钓功能'''
+    msg = '''Mendaco_bot v0.6.0
+    宠物系统已上线！使用/pet_help查看帮助'''
     await version.send(msg)
 
 helps = on_command('help')
 
 @helps.handle()
 async def handle_function(event: Event):
-    msg = '''功能一览：
-    漂流瓶->/throw /bottle /comment
-    小助手->/ask
-    钓鱼->/fish_help
-    鱼缸->/tank
-    抽卡->/record_help
-    查询个人货币->/user
-    等待后续更新中'''
+    msg = '''📋 功能一览：
+    🎲 漂流瓶  -> /throw /bottle /comment
+    🤖 AI对话  -> /ask
+    🎣 钓鱼    -> /fish_help
+    🐟 鱼缸    -> /tank
+    💿 抽卡    -> /record_help
+    🐾 宠物    -> /pet_help
+    💰 货币    -> /user
+    📅 签到    -> /sign_help
+    
+    使用各功能的帮助命令查看详细用法'''
     await helps.send(msg)
