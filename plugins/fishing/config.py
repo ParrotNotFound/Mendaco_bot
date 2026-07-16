@@ -214,3 +214,4 @@ class Config(BaseModel):
     # 海钓额外配置
     sea_fishing_extra_cost: int = Field(7, description="海钓额外消耗银币")
     sea_fishing_exp_multiple: float = Field(1.5, description="海钓经验倍数")
+    max_fish_per_command: int = Field(3, description="每次钓鱼最大钓到的鱼数量")
