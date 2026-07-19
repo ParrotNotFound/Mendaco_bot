@@ -206,23 +206,52 @@ def _get_pet_file_path(uid: str) -> str:
 # ===================================================================
 def _check_cooldown(uid: str, action: str, cooldown: int) -> Tuple[bool, int]:
     """
-    检查冷却时间
+    检查冷却时间（同时会设置冷却）
+    返回: (是否可用, 剩余冷却秒数)
+    """
+    ok, remaining = _is_cooldown_available(uid, action, cooldown)
+    if not ok:
+        return False, remaining
+    _set_cooldown(uid, action, cooldown)
+    return True, 0
+
+
+def _is_cooldown_available(uid: str, action: str, cooldown: int) -> Tuple[bool, int]:
+    """
+    仅检查冷却是否可用，不更新冷却时间。
+    使用上次训练时存储的冷却时长（取较大值），防止短时长绕过长时长。
     返回: (是否可用, 剩余冷却秒数)
     """
     current_time = time.time()
     if uid not in _cooldowns:
         _cooldowns[uid] = {}
 
-    last_time = _cooldowns[uid].get(action, 0)
+    entry = _cooldowns[uid].get(action, None)
+    if entry is None:
+        return True, 0
+
+    # 兼容旧格式（纯 float 时间戳 → 转换为新格式）
+    if isinstance(entry, (int, float)):
+        last_time = float(entry)
+        stored_cooldown = cooldown  # 旧格式无时长记录，用当前请求的时长兜底
+    else:
+        last_time, stored_cooldown = entry
+
+    effective_cooldown = max(cooldown, stored_cooldown)  # 取较大值
     elapsed = current_time - last_time
 
-    if elapsed < cooldown:
-        remaining = int(cooldown - elapsed)
+    if elapsed < effective_cooldown:
+        remaining = int(effective_cooldown - elapsed)
         return False, remaining
 
-    # 更新冷却时间
-    _cooldowns[uid][action] = current_time
     return True, 0
+
+
+def _set_cooldown(uid: str, action: str, cooldown: int = 0):
+    """设置冷却时间到当前时刻，同时记录冷却时长"""
+    if uid not in _cooldowns:
+        _cooldowns[uid] = {}
+    _cooldowns[uid][action] = (time.time(), cooldown)
 
 
 # ===================================================================
@@ -297,6 +326,7 @@ def _new_pet_obj(name: str, pet_type: str, existing_pets: Optional[List[Dict[str
         "last_work_time": 0.0,
         "adopt_time": now,
         "last_interact": now,
+        "formula_version": 2,
     }
 
 
@@ -416,9 +446,27 @@ def _migrate_pet_fields(pet: Dict[str, Any]) -> Dict[str, Any]:
         _type_base("base_speed", pet_config.base_speed)
         + int(pet_config.speed_growth * _type_mult("spd_growth_mult") * lv_log))
     pet.setdefault("trophies", pet_config.initial_trophies)
-    pet.setdefault("skills", [])
-    pet.setdefault("skill_names", {})
+    if "skill_names" not in pet:
+        pet["skill_names"] = {}
     pet.setdefault("last_work_time", 0.0)
+    # === 按宠物类型和等级重新计算技能列表（确保配置变更后生效） ===
+    pet_type = pet.get("pet_type", "猫")
+    type_config = pet_config.pet_types.get(pet_type)
+    if type_config and type_config.skills:
+        correct_skills = []
+        for idx, unlock_lv in enumerate(sorted(pet_config.skill_unlock_levels)):
+            if pet["level"] >= unlock_lv and idx < len(type_config.skills):
+                sid = type_config.skills[idx]
+                if sid not in correct_skills:
+                    correct_skills.append(sid)
+        # 只覆盖技能列表（skill_names 自定义名保留）
+        pet["skills"] = correct_skills
+    else:
+        pet.setdefault("skills", [])
+    # === 经验公式版本迁移（v1 线性 → v2 指数） ===
+    if pet.get("formula_version", 1) < 2:
+        pet["exp"] = 0
+        pet["formula_version"] = 2
     return pet
 
 
@@ -484,8 +532,8 @@ def _calc_trophy_change(r_winner: int, r_loser: int) -> Tuple[int, int]:
 #  核心逻辑：宠物属性计算
 # ===================================================================
 def _calc_level_up_exp(level: int) -> int:
-    """计算升级所需经验"""
-    return level * pet_config.base_exp_per_level
+    """计算升级所需经验（指数曲线：A × R^L + C，前期平缓后期爆炸）"""
+    return round(pet_config.exp_coefficient * (pet_config.exp_rate ** level) + pet_config.exp_constant)
 
 
 def _calc_pet_hp(pet_type: str, level: int) -> int:
@@ -545,13 +593,19 @@ def _calc_pet_speed(pet_type: str, level: int) -> int:
 def _check_skill_unlock(pet: Dict[str, Any], old_level: int, new_level: int) -> List[int]:
     """
     检查升级过程中是否有新技能解锁。
+    每种宠物类型有自己的3个技能，按 skill_unlock_levels 依次解锁。
     返回新解锁的技能ID列表。
     """
     unlocked = []
-    for unlock_lv in sorted(pet_config.skill_unlock_levels):
+    pet_type = pet.get("pet_type", "猫")
+    type_config = pet_config.pet_types.get(pet_type)
+    if not type_config or not type_config.skills:
+        return unlocked
+
+    for idx, unlock_lv in enumerate(sorted(pet_config.skill_unlock_levels)):
         if old_level < unlock_lv <= new_level:
-            skill_ids = pet_config.skill_unlock_map.get(unlock_lv, [])
-            for sid in skill_ids:
+            if idx < len(type_config.skills):
+                sid = type_config.skills[idx]
                 if sid not in pet.get("skills", []):
                     unlocked.append(sid)
     return unlocked
@@ -795,36 +849,42 @@ def _try_trigger_skill_on(
 
         params = skill_cfg.params
         stype = skill_cfg.skill_type
+        display_name = _get_skill_display_name(caster, sid)
 
         if stype == "buff_defense":
             ratio = params.get("ratio", 0.5)
             caster_buffs["defense"] = 1.0 + ratio
-            return skill_cfg.name, 0
+            return display_name, 0
 
         elif stype == "heal":
             ratio = params.get("ratio", 0.3)
             heal = int(caster["hp"] * ratio)
-            return skill_cfg.name, -heal  # 负值=治疗
+            return display_name, -heal  # 负值=治疗
 
         elif stype == "debuff_defense":
             ratio = params.get("ratio", 0.5)
             target_buffs["defense"] = 1.0 - ratio
-            return skill_cfg.name, 0
+            return display_name, 0
+
+        elif stype == "debuff_magic_def":
+            ratio = params.get("ratio", 0.5)
+            target_buffs["magic_def"] = 1.0 - ratio
+            return display_name, 0
 
         elif stype == "debuff_atk":
             ratio = params.get("ratio", 0.3)
             target_buffs["atk"] = 1.0 - ratio
-            return skill_cfg.name, 0
+            return display_name, 0
 
         elif stype == "power_strike":
             multiplier = params.get("multiplier", 3.0)
             dmg = max(1, int(caster["atk"] * multiplier))
-            return skill_cfg.name, dmg
+            return display_name, dmg
 
         elif stype == "true_strike":
             # 给自身附加"真实打击"buff，下次普攻无视一切防御
             caster_buffs["true_strike"] = 1.0
-            return skill_cfg.name, 0
+            return display_name, 0
 
         elif stype == "magic_strike":
             # 火球术：法伤强力击，受目标法抗减免
@@ -836,18 +896,18 @@ def _try_trigger_skill_on(
                 dmg = int(dmg * random.uniform(
                     pet_config.battle_magic_random_min, pet_config.battle_magic_random_max
                 ))
-                return skill_cfg.name, max(1, dmg)
-            return skill_cfg.name, max(1, raw)
+                return display_name, max(1, dmg)
+            return display_name, max(1, raw)
 
         elif stype == "speed_up":
             ratio = params.get("ratio", 0.5)
             caster_buffs["speed"] = 1.0 + ratio
-            return skill_cfg.name, 0
+            return display_name, 0
 
         elif stype == "freeze":
             dur = int(params.get("duration", 1))
             target_buffs["freeze"] = float(dur)
-            return skill_cfg.name, 0
+            return display_name, 0
 
     return None, 0
 
@@ -1017,8 +1077,8 @@ def _calc_battle(
         attacker_wins = False
         log.append(f"⏰ 战斗超时（{max_turns}回合），{defender['name']}获胜！")
 
-    # 生成日志摘要（最多保留最近8条）
-    log_text = "\n".join(log[-8:])
+    # 生成完整战斗日志
+    log_text = "\n".join(log)
     return attacker_wins, a_cur, d_cur, log_text
 
 
@@ -1304,8 +1364,8 @@ async def handle_work(event: MessageEvent):
         if not pet:
             await work_cmd.finish(_format_no_pet())
 
-        # 检查冷却
-        available, remaining = _check_cooldown(
+        # 检查冷却（仅检查，不设置）
+        available, remaining = _is_cooldown_available(
             uid, "work", pet_config.work_cooldown
         )
         if not available:
@@ -1323,6 +1383,9 @@ async def handle_work(event: MessageEvent):
 
         # 计算收益与消耗（含休息时间加成/惩罚）
         reward, fullness_cost, mood_cost = _calc_work_reward(pet)
+
+        # ✅ 所有验证通过后才设置冷却
+        _set_cooldown(uid, "work", pet_config.work_cooldown)
 
         # 更新状态
         pet["fullness"] = max(
@@ -1378,57 +1441,70 @@ async def handle_train(event: MessageEvent, args: Message = CommandArg()):
     if not pet:
         await train_cmd.finish(_format_no_pet())
 
-    # 检查冷却（动态冷却 = 训练小时数）
-    cooldown_sec = int(hours * 3600)
-    available, remaining = _check_cooldown(
-        uid, "train", cooldown_sec
-    )
-    if not available:
-        rh = remaining // 3600
-        rm = (remaining % 3600) // 60
-        if rh > 0:
-            await train_cmd.finish(f"⏳ 训练中，剩余 {rh} 小时 {rm} 分钟~")
-        else:
-            await train_cmd.finish(f"⏳ 训练中，剩余 {rm} 分钟~")
+    async with _get_user_lock(uid):
+        # 重新加载（加锁后可能已被其他操作修改）
+        user_data = _load_pet_data(uid)
+        pet = _resolve_default_pet(user_data)
+        if not pet:
+            await train_cmd.finish(_format_no_pet())
 
-    # 计算倍率 multiplier = log2(hours × 2 + 1)
-    import math
-    multiplier = math.log2(hours * 2 + 1)
-
-    # 检查饱腹度（按倍率放大后的消耗检查）
-    total_fullness_cost = min(100, int(multiplier * pet_config.train_fullness_cost))
-    if pet["fullness"] < total_fullness_cost:
-        await train_cmd.finish(
-            f"😅 {pet['name']}太饿了（饱腹{pet['fullness']}），"
-            f"训练{hours}小时需要 {total_fullness_cost} 饱腹度！先喂食吧 /feed"
+        # 检查冷却（仅检查，不设置——动态冷却 = 训练小时数）
+        cooldown_sec = int(hours * 3600)
+        available, remaining = _is_cooldown_available(
+            uid, "train", cooldown_sec
         )
+        if not available:
+            rh = remaining // 3600
+            rm = (remaining % 3600) // 60
+            if rh > 0:
+                await train_cmd.finish(f"⏳ 训练中，剩余 {rh} 小时 {rm} 分钟~")
+            else:
+                await train_cmd.finish(f"⏳ 训练中，剩余 {rm} 分钟~")
 
-    # 检查是否满级
-    if pet["level"] >= pet_config.max_level:
-        await train_cmd.finish(f"✨ {pet['name']}已经满级了，不用再训练啦~")
+        # 计算倍率 multiplier = log2(hours × 2 + 1)
+        import math
+        multiplier = math.log2(hours * 2 + 1)
 
-    # 消耗银币（固定，不受时长影响）
-    result = await consume_coins(uid, pet_config.train_coin_cost, nickname=nickname)
-    if result[0] is None:
-        coins, _, _ = await get_user_info(uid)
-        await train_cmd.finish(
-            f"😅 银币不够！训练需要 {pet_config.train_coin_cost} 银币，你只有 {coins} 银币"
+        # 检查饱腹度（按倍率放大后的消耗检查）
+        total_fullness_cost = min(100, int(multiplier * pet_config.train_fullness_cost))
+        if pet["fullness"] < total_fullness_cost:
+            await train_cmd.finish(
+                f"😅 {pet['name']}太饿了（饱腹{pet['fullness']}），"
+                f"训练{hours}小时需要 {total_fullness_cost} 饱腹度！先喂食吧 /feed"
+            )
+
+        # 检查是否满级
+        if pet["level"] >= pet_config.max_level:
+            await train_cmd.finish(f"✨ {pet['name']}已经满级了，不用再训练啦~")
+
+        # 消耗银币（固定，不受时长影响）
+        result = await consume_coins(uid, pet_config.train_coin_cost, nickname=nickname)
+        if result[0] is None:
+            coins, _, _ = await get_user_info(uid)
+            await train_cmd.finish(
+                f"😅 银币不够！训练需要 {pet_config.train_coin_cost} 银币，你只有 {coins} 银币"
+            )
+
+        # 计算基础收益 × 时长倍率
+        base_exp = _calc_train_reward(pet)
+        exp_gain = int(multiplier * base_exp)
+
+        # 更新状态
+        pet["fullness"] = max(
+            pet_config.min_fullness, pet["fullness"] - total_fullness_cost
         )
+        pet["exp"] += exp_gain
+        pet["last_interact"] = datetime.now().isoformat()
 
-    # 计算基础收益 × 时长倍率
-    base_exp = _calc_train_reward(pet)
-    exp_gain = int(multiplier * base_exp)
+        # 尝试升级
+        leveled_up, new_level, new_skills = _try_level_up(pet)
 
-    # 更新状态
-    pet["fullness"] = max(
-        pet_config.min_fullness, pet["fullness"] - total_fullness_cost
-    )
-    pet["exp"] += exp_gain
-    pet["last_interact"] = datetime.now().isoformat()
+        # ✅ 先保存数据，再设置冷却（保存失败不设冷却）
+        if not _save_pet_data(uid, user_data):
+            # 保存失败：冷却不设置，经验没存上，但币已扣（无法回滚）
+            await train_cmd.finish("😅 数据保存失败，请稍后重试…")
 
-    # 尝试升级
-    leveled_up, new_level, new_skills = _try_level_up(pet)
-    _save_pet_data(uid, user_data)
+        _set_cooldown(uid, "train", cooldown_sec)
 
     msg_parts = [
         f"🏋️ {pet['name']}训练了 {hours} 小时！",
@@ -1583,16 +1659,23 @@ async def handle_attack(event: MessageEvent, args: Message = CommandArg()):
     _save_pet_data(uid, user_data)
     _save_pet_data(target_uid, target_user_data)
 
-    # ---- 输出：文字或图片 ----
-    if log_text:
-        result_msg += "\n\n📜 战斗回放：\n" + log_text
+    # ---- 输出：结算文字，战斗过程转图片 ----
+    # 先发结算（纯文字）
+    await attack_cmd.send(result_msg)
 
-    if pet_config.battle_use_image:
-        img_seg = _make_image_segment(result_msg)
+    # 战斗回放转图片（全过程）
+    log_text = battle_log.strip()
+    if log_text:
+        replay_header = f"📜 战斗回放：{my_pet['name']} vs {target_pet['name']}"
+        replay_text = replay_header + "\n" + log_text
+        img_seg = _make_image_segment(replay_text)
         if img_seg:
             await attack_cmd.finish(img_seg)
-
-    await attack_cmd.finish(result_msg)
+        else:
+            await attack_cmd.finish(replay_text)
+    else:
+        # 没有战斗日志时不再重复发送（结算已发）
+        pass
 
 
 # -------- 宠物商店 --------

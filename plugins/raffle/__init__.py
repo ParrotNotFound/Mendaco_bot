@@ -19,9 +19,11 @@ __plugin_meta__ = PluginMetadata(
     usage="""
 单抽唱片: /draw_record
 十连唱片: /draw_10
-我的唱片: /my_records
+五十连唱片: /draw_50
+我的唱片: /my_records [页码]
 查看唱片详情: /record_info 序号
 唱片统计: /record_stats
+收集率排行: /record_rank
 唱片帮助: /record_help
 """,
     config=RecordConfig,
@@ -268,6 +270,57 @@ def get_record_detailed_info(record: Dict) -> str:
     
     return info
 
+
+def get_collection_key(record: Dict) -> str:
+    """生成收集率统计用的唯一键（仅按曲目+难度，忽略稀有度）"""
+    return f"{record.get('music_id')}_{record.get('diff_index')}"
+
+
+def get_total_available_songs() -> int:
+    """获取数据库中可抽取的曲目+难度组合总数"""
+    if not MAIMAI_MUSIC_AVAILABLE or not total_list:
+        return 0
+    filtered = total_list.filter(diff=[3, 4])
+    return len(filtered)
+
+
+def get_user_collection_stats(user_data: Dict) -> Tuple[int, int, float]:
+    """
+    计算用户的收集率统计
+    返回: (已收集数, 总数, 收集率百分比)
+    """
+    total = get_total_available_songs()
+    if total == 0:
+        return 0, 0, 0.0
+
+    collected = set()
+    for record in user_data.get("records", []):
+        collected.add(get_collection_key(record))
+
+    rate = len(collected) / total * 100
+    return len(collected), total, rate
+
+
+def get_all_user_collection_rates() -> List[Tuple[str, int, int, float]]:
+    """获取所有用户的收集率，返回 [(user_id, collected, total, rate), ...]"""
+    users_dir = safe_path(f"{RECORD_ROOT}/users")
+    if not users_dir.exists():
+        return []
+
+    results = []
+    for file_path in users_dir.glob("*.json"):
+        uid = file_path.stem
+        try:
+            data = load_user_data(uid)
+            collected, total, rate = get_user_collection_stats(data)
+            if collected > 0:
+                results.append((uid, collected, total, rate))
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x[3], reverse=True)
+    return results
+
 def process_single_draw(user_data: Dict) -> Dict:
     """处理单次抽取，返回抽取结果和是否为新唱片"""
     if not MAIMAI_MUSIC_AVAILABLE:
@@ -362,10 +415,12 @@ def update_user_stats_after_draws(user_data: Dict, draw_count: int) -> Dict:
 # 命令处理器
 draw_record = on_command("draw_record", aliases={"draw","pick","抽唱片", "唱片抽取", "单抽"}, priority=5, block=True)
 draw_10 = on_command("draw_10", aliases={"十连", "十连抽", "pick_10", "唱片十连"}, priority=5, block=True)
+draw_50 = on_command("draw_50", aliases={"五十连", "五十连抽", "唱片五十连"}, priority=5, block=True)
 my_records = on_command("my_records", aliases={"我的唱片", "唱片列表"}, priority=5, block=True)
 record_info = on_command("record_info", aliases={"唱片详情", "查看唱片"}, priority=5, block=True)
 record_stats = on_command("record_stats", aliases={"唱片统计", "唱片信息"}, priority=5, block=True)
 record_help = on_command("record_help", aliases={"唱片帮助"}, priority=5, block=True)
+record_rank = on_command("record_rank", aliases={"唱片排行", "收集排行", "收集率排行"}, priority=5, block=True)
 
 @draw_record.handle()
 async def handle_draw_record(event: MessageEvent):
@@ -429,99 +484,104 @@ async def handle_draw_record(event: MessageEvent):
         await draw_record.finish(record_name)
 
 @draw_10.handle()
-async def handle_draw_10(event: MessageEvent):
-    """处理十连抽命令"""
-    if not MAIMAI_MUSIC_AVAILABLE:
-        await draw_10.finish("❌ 唱片系统暂不可用，maimai音乐数据未加载")
-    
+async def _do_multi_draw(event: MessageEvent, draw_count: int, label: str, cmd):
+    """共享的多连抽逻辑"""
     user_id = get_user_id(event)
     nickname = get_user_nickname(event)
-    draw_count = 10
-    
+
     # 检查每日限制
     can_draw, limit_msg = check_daily_limit(user_id, draw_count)
     if not can_draw:
-        await draw_10.finish(f"❌ {limit_msg}")
-    
+        await cmd.finish(f"❌ {limit_msg}")
+
     # 检查银币是否足够
     total_cost = config.draw_cost * draw_count
     coin_balance, exp, _ = await get_user_info(user_id)
     if coin_balance < total_cost:
-        await draw_10.finish(f"❌ 银币不足，需要{total_cost}银币，当前只有{coin_balance}银币")
-    
+        await cmd.finish(f"❌ 银币不足，需要{total_cost}银币，当前只有{coin_balance}银币")
+
     # 检查唱片数量限制
     user_data = load_user_data(user_id)
     remaining_slots = config.max_records_per_user - len(user_data["records"])
     if remaining_slots <= 0:
-        await draw_10.finish(f"❌ 唱片数量已达上限（{config.max_records_per_user}张）")
-    
-    # 如果剩余槽位不足10个，只抽取剩余槽位数量
+        await cmd.finish(f"❌ 唱片数量已达上限（{config.max_records_per_user}张）")
+
+    # 如果剩余槽位不足，只抽取剩余槽位数量
     actual_draw_count = min(draw_count, remaining_slots)
     if actual_draw_count < draw_count:
-        await draw_10.send(f"⚠️ 唱片槽位不足，将只抽取{actual_draw_count}次（剩余槽位{remaining_slots}个）")
-    
+        await cmd.send(f"⚠️ 唱片槽位不足，将只抽取{actual_draw_count}次（剩余槽位{remaining_slots}个）")
+
     # 消耗银币
     actual_cost = config.draw_cost * actual_draw_count
     result = await consume_coins(user_id, actual_cost, config.exp_multiple, nickname)
     if result[0] is None:
-        await draw_10.finish("❌ 银币消费失败，请稍后重试")
-    
-    new_coins, new_exp = result
-    
-    # 处理十连抽
+        await cmd.finish("❌ 银币消费失败，请稍后重试")
+
+    # 处理多连抽
     draw_results = []
     successful_draws = 0
-    
+
     for i in range(actual_draw_count):
         draw_result = process_single_draw(user_data)
         if draw_result:
             draw_results.append(draw_result)
             successful_draws += 1
-    
+
     if successful_draws == 0:
-        # 抽取全部失败，返还银币
         await get_coins(user_id, actual_cost, 0, nickname)
-        await draw_10.finish("❌ 抽取失败，没有找到符合条件的曲目，银币已返还")
-    
+        await cmd.finish("❌ 抽取失败，没有找到符合条件的曲目，银币已返还")
+
     # 更新用户统计
     user_data = update_user_stats_after_draws(user_data, successful_draws)
-    
+
     # 保存数据
     if not save_user_data(user_id, user_data):
-        # 保存失败，返还银币
         await get_coins(user_id, actual_cost, 0, nickname)
-        await draw_10.finish("❌ 保存唱片数据失败，银币已返还")
-    
-    # 构建回复消息
-    reply_msg = f"十连抽结果:\n"
-    reply_msg += "=" * 20 + "\n"
-    
-    for i, result in enumerate(draw_results, 1):
-        record_name = get_record_display_name(
-            result["record"], 
-            result["is_new"]
-        )
-        reply_msg += f"{record_name}\n"
-    
+        await cmd.finish("❌ 保存唱片数据失败，银币已返还")
+
     # 统计新唱片数量
     new_records = sum(1 for r in draw_results if r["is_new"])
     duplicate_records = len(draw_results) - new_records
-    
-    #reply_msg += f"\n📊 统计: 新唱片{new_records}张，重复唱片{duplicate_records}张"
-    img = image_to_base64(text_to_image2(reply_msg))
+
+    # 构建回复消息
+    reply_msg = f"{label}结果 (新{new_records}张/重复{duplicate_records}张):\n"
+    reply_msg += "=" * 20 + "\n"
+
+    for i, result in enumerate(draw_results, 1):
+        record_name = get_record_display_name(
+            result["record"],
+            result["is_new"]
+        )
+        reply_msg += f"{record_name}\n"
+
     message_id = event.message_id if hasattr(event, 'message_id') else None
     if message_id:
-        await draw_10.send(MessageSegment.reply(message_id) + Message([
-                        MessageSegment("image", {
-                            "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
-                        })
-                    ]))
+        await cmd.finish(MessageSegment.reply(message_id) + Message([
+            MessageSegment("image", {
+                "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
+            })
+        ]))
     else:
-        await draw_10.finish(Message([
-                        MessageSegment("image", {
-                            "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
-                        })
-                    ]))
+        await cmd.finish(Message([
+            MessageSegment("image", {
+                "file": f"base64://{str(image_to_base64(text_to_image2(reply_msg)), encoding='utf-8')}"
+            })
+        ]))
+
+@draw_10.handle()
+async def handle_draw_10(event: MessageEvent):
+    """处理十连抽命令"""
+    if not MAIMAI_MUSIC_AVAILABLE:
+        await draw_10.finish("❌ 唱片系统暂不可用，maimai音乐数据未加载")
+    await _do_multi_draw(event, 10, "十连抽", draw_10)
+
+
+@draw_50.handle()
+async def handle_draw_50(event: MessageEvent):
+    """处理五十连抽命令"""
+    if not MAIMAI_MUSIC_AVAILABLE:
+        await draw_50.finish("❌ 唱片系统暂不可用，maimai音乐数据未加载")
+    await _do_multi_draw(event, 50, "五十连抽", draw_50)
 
 @my_records.handle()
 async def handle_my_records(event: MessageEvent, args: Message = CommandArg()):
@@ -581,19 +641,23 @@ async def handle_my_records(event: MessageEvent, args: Message = CommandArg()):
             if count > 0:
                 reply_msg += f"  {rarity}: {count}种\n"
     
+    # 收集率
+    collected, total_avail, rate = get_user_collection_stats(user_data)
+    reply_msg += f"\n📀 收集率: {collected}/{total_avail} ({rate:.2f}%)\n"
+
     reply_msg += f"\n📁 唱片列表 (按稀有度和数量排序):\n"
-    
+
     for i in range(start_idx, end_idx):
         record = sorted_records[i]
         record_name = get_record_display_name(record, False)
         count = record.get("count", 1)
-        
+
         # 显示获得次数
         if count > 1:
             record_name += f" (x{count})"
-        
+
         reply_msg += f"{i+1}. {record_name}\n"
-    
+
     reply_msg += f"\n使用 /record_info 序号 查看唱片详情\n"
     reply_msg += f"使用 /my_records 页码 查看其他页"
     
@@ -678,6 +742,10 @@ async def handle_record_stats(event: MessageEvent):
                 actual_rate = 0
             reply_msg += f"  {rarity}: {count}种 ({actual_rate*100:.1f}%，理论{prob*100:.0f}%)\n"
     
+# 收集率
+    collected, total_avail, rate = get_user_collection_stats(user_data)
+    reply_msg += f"\n📀 收集率: {collected}/{total_avail} ({rate:.2f}%)\n"
+
     # 获取银币余额
     coin_balance, exp, _ = await get_user_info(user_id)
     reply_msg += f"\n💰 当前银币: {coin_balance}枚\n"
@@ -686,6 +754,49 @@ async def handle_record_stats(event: MessageEvent):
     
     await record_stats.finish(reply_msg)
 
+
+@record_rank.handle()
+async def handle_record_rank(event: MessageEvent):
+    """收集率排行榜"""
+    if not MAIMAI_MUSIC_AVAILABLE:
+        await record_rank.finish("❌ 唱片系统暂不可用")
+
+    total_avail = get_total_available_songs()
+    if total_avail == 0:
+        await record_rank.finish("❌ 无法获取曲库信息")
+
+    all_rates = get_all_user_collection_rates()
+    if not all_rates:
+        await record_rank.finish("目前还没有任何人有唱片收藏~")
+
+    limit = min(20, len(all_rates))
+    top = all_rates[:limit]
+
+    reply_msg = f"📀 收集率排行榜 (总曲库 {total_avail} 种)\n"
+    reply_msg += "=" * 25 + "\n"
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for idx, (uid, collected, total, rate) in enumerate(top, 1):
+        medal = medals.get(idx, f"{idx:>2}.")
+        reply_msg += f"{medal} {collected}/{total} ({rate:.2f}%)\n"
+
+    # 查询者自己的排名
+    user_id = get_user_id(event)
+    user_data = load_user_data(user_id)
+    user_col, _, user_rate = get_user_collection_stats(user_data)
+    my_rank = None
+    for idx, (uid, _, _, _) in enumerate(all_rates, 1):
+        if uid == user_id:
+            my_rank = idx
+            break
+
+    if my_rank:
+        reply_msg += f"\n📌 你的排名: 第{my_rank}名 ({user_col}/{total_avail}, {user_rate:.2f}%)"
+    elif user_col > 0:
+        reply_msg += f"\n📌 你不在前{limit}名 ({user_col}/{total_avail}, {user_rate:.2f}%)"
+
+    await record_rank.finish(reply_msg)
+
 @record_help.handle()
 async def handle_record_help():
     """显示唱片帮助"""
@@ -693,19 +804,24 @@ async def handle_record_help():
     reply_msg += "=" * 20 + "\n"
     reply_msg += f"💰 单抽消耗: {config.draw_cost}银币\n"
     reply_msg += f"💰 十连消耗: {config.draw_cost * 10}银币\n"
+    reply_msg += f"💰 五十连消耗: {config.draw_cost * 50}银币\n"
     reply_msg += f"📅 每日抽取限制: {config.daily_draw_limit}次\n"
     reply_msg += f"🎴 唱片存储上限: {config.max_records_per_user}张\n"
     reply_msg += f"🔄 允许重复: {'是' if config.allow_duplicates else '否'}\n\n"
-    
+
     reply_msg += "📊 唱片等级概率:\n"
     for rarity, prob in config.record_rarity_prob.items():
         ds_range = config.record_ds_ranges.get(rarity, (1.0, 5.0))
         reply_msg += f"  {rarity}: {prob*100:.1f}% (DS: {ds_range[0]}-{ds_range[1]})\n"
-    
+
     reply_msg += "\n🎯 可用命令:\n"
     reply_msg += "  /draw_record - 单抽一张唱片\n"
     reply_msg += "  /draw_10 - 十连抽唱片\n"
-    reply_msg += "  /my_records - 查看我的唱片收藏\n"
+    reply_msg += "  /draw_50 - 五十连抽唱片\n"
+    reply_msg += "  /my_records [页码] - 查看我的唱片收藏（含收集率）\n"
+    reply_msg += "  /record_info 序号 - 查看唱片详情\n"
+    reply_msg += "  /record_stats - 查看唱片统计（含收集率）\n"
+    reply_msg += "  /record_rank - 收集率排行榜\n"
     reply_msg += "  /record_info 序号 - 查看唱片详情\n"
     reply_msg += "  /record_stats - 查看唱片统计\n"
     reply_msg += "  /record_help - 显示此帮助\n"

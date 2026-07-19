@@ -21,6 +21,8 @@ class PetTypeConfig(BaseModel):
     matk_growth_mult: float = 1.0
     mdef_growth_mult: float = 1.0
     spd_growth_mult: float = 1.0
+    # ---- 技能列表（3个技能ID，依次在10/30/60级解锁） ----
+    skills: List[int] = [1, 2, 3]
 
 
 class SkillConfig(BaseModel):
@@ -33,14 +35,15 @@ class SkillConfig(BaseModel):
     params: Dict[str, float]      # 技能参数
 
     # skill_type 说明及 params 字段:
-    #   "buff_defense"  : {"ratio": 0.5, "duration": 2}     → 加防御 ratio%，持续 duration 回合
-    #   "heal"          : {"ratio": 0.3}                     → 回复 HP ratio% 的血量
-    #   "debuff_defense": {"ratio": 0.5, "duration": 2}     → 减对方防御 ratio%，持续 duration 回合
-    #   "debuff_atk"    : {"ratio": 0.3, "duration": 2}     → 减对方攻击 ratio%，持续 duration 回合
-    #   "power_strike"  : {"multiplier": 3.0}                → 造成 ATK × multiplier 的物理伤害
-    #   "true_damage"   : {"ratio": 0.2}                     → 造成最大 HP × ratio 的真实伤害（无视防御法抗）
-    #   "speed_up"      : {"ratio": 0.5, "duration": 3}     → 加自己速度 ratio%，持续 duration 回合
-    #   "freeze"        : {"duration": 1}                    → 使对方冻结 duration 回合（无法行动）
+    #   "buff_defense"    : {"ratio": 0.5, "duration": 2}   → 加防御 ratio%，持续 duration 回合
+    #   "heal"            : {"ratio": 0.3}                   → 回复 HP ratio% 的血量
+    #   "debuff_defense"  : {"ratio": 0.5, "duration": 2}   → 减对方防御 ratio%，持续 duration 回合
+    #   "debuff_magic_def": {"ratio": 0.5, "duration": 2}   → 减对方法抗 ratio%，持续 duration 回合
+    #   "debuff_atk"      : {"ratio": 0.3, "duration": 2}   → 减对方攻击 ratio%，持续 duration 回合
+    #   "power_strike"    : {"multiplier": 3.0}              → 造成 ATK × multiplier 的物理伤害
+    #   "true_damage"     : {"ratio": 0.2}                   → 造成最大 HP × ratio 的真实伤害（无视防御法抗）
+    #   "speed_up"        : {"ratio": 0.5, "duration": 3}   → 加自己速度 ratio%，持续 duration 回合
+    #   "freeze"          : {"duration": 1}                  → 使对方冻结 duration 回合（无法行动）
 
 
 class ShopItemConfig(BaseModel):
@@ -79,30 +82,35 @@ class Config(BaseModel):
                 base_defense=4, base_magic_atk=2, base_magic_def=4, base_speed=12,
                 hp_growth_mult=0.9, atk_growth_mult=1.2, def_growth_mult=0.8,
                 matk_growth_mult=1.0, mdef_growth_mult=0.8, spd_growth_mult=1.2,
+                skills=[5, 3, 7],
             ),
             "狗": PetTypeConfig(
                 name="狗", cost=60, base_hp=120, base_atk=10, emoji="🐶",
-                base_defense=7, base_magic_atk=0, base_magic_def=6, base_speed=10,
-                hp_growth_mult=1.2, atk_growth_mult=0.9, def_growth_mult=1.5,
-                matk_growth_mult=0.5, mdef_growth_mult=1.1, spd_growth_mult=0.9,
+                base_defense=7, base_magic_atk=0, base_magic_def=2, base_speed=10,
+                hp_growth_mult=1.2, atk_growth_mult=1.0, def_growth_mult=1.5,
+                matk_growth_mult=0.5, mdef_growth_mult=0.3, spd_growth_mult=0.9,
+                skills=[1, 2, 4],
             ),
             "龙": PetTypeConfig(
                 name="龙", cost=200, base_hp=150, base_atk=12, emoji="🐉",
                 base_defense=6, base_magic_atk=5, base_magic_def=7, base_speed=9,
                 hp_growth_mult=1.2, atk_growth_mult=0.9, def_growth_mult=1.0,
                 matk_growth_mult=1.4, mdef_growth_mult=1.2, spd_growth_mult=1.0,
+                skills=[9, 8, 1],
             ),
             "兔": PetTypeConfig(
-                name="兔", cost=40, base_hp=80, base_atk=8, emoji="🐰",
+                name="兔", cost=40, base_hp=100, base_atk=8, emoji="🐰",
                 base_defense=3, base_magic_atk=3, base_magic_def=3, base_speed=14,
-                hp_growth_mult=0.7, atk_growth_mult=0.8, def_growth_mult=0.6,
+                hp_growth_mult=0.9, atk_growth_mult=1.0, def_growth_mult=0.6,
                 matk_growth_mult=1.1, mdef_growth_mult=0.7, spd_growth_mult=1.4,
+                skills=[7, 6, 4],
             ),
             "狐": PetTypeConfig(
                 name="狐", cost=100, base_hp=110, base_atk=15, emoji="🦊",
                 base_defense=5, base_magic_atk=8, base_magic_def=6, base_speed=11,
                 hp_growth_mult=0.9, atk_growth_mult=1.0, def_growth_mult=0.8,
                 matk_growth_mult=1.8, mdef_growth_mult=1.3, spd_growth_mult=1.1,
+                skills=[9, 10, 8],
             ),
         },
         description="宠物类型配置，不同类型消耗不同银币，基础属性与成长速度各异"
@@ -115,9 +123,17 @@ class Config(BaseModel):
     # ===================================================================
     #  成长配置
     # ===================================================================
-    base_exp_per_level: int = Field(
-        default=50,
-        description="每级所需经验基数，升级所需经验 = 等级 × 该值"
+    exp_coefficient: float = Field(
+        default=35,
+        description="经验公式系数 A，升级经验 = round(A × R^等级 + C)，指数曲线前期平缓后期爆炸"
+    )
+    exp_rate: float = Field(
+        default=1.055,
+        description="经验公式底数 R"
+    )
+    exp_constant: float = Field(
+        default=120,
+        description="经验公式常数项 C，控制低等级起步门槛"
     )
     hp_growth: int = Field(
         default=120,
@@ -128,7 +144,7 @@ class Config(BaseModel):
         description="ATK对数成长基数"
     )
     defense_growth: int = Field(
-        default=12,
+        default=18,
         description="DEF对数成长基数"
     )
     magic_atk_growth: int = Field(
@@ -136,7 +152,7 @@ class Config(BaseModel):
         description="法伤对数成长基数"
     )
     magic_def_growth: int = Field(
-        default=6,
+        default=4,
         description="法抗对数成长基数"
     )
     speed_growth: int = Field(
@@ -242,16 +258,16 @@ class Config(BaseModel):
         description="单次训练最大时长（小时）"
     )
     train_exp_min: int = Field(
-        default=10,
+        default=130,
         description="训练获得经验最小值"
     )
     train_exp_max: int = Field(
-        default=30,
+        default=180,
         description="训练获得经验最大值"
     )
     train_exp_level_multiplier: int = Field(
-        default=2,
-        description="训练经验等级加成，获得经验 += 等级 × 该值"
+        default=0,
+        description="训练经验等级加成，获得经验 += 等级 × 该值（0=不随等级增长，各等级经验一致）"
     )
 
     # ===================================================================
@@ -354,22 +370,14 @@ class Config(BaseModel):
     #  技能配置
     # ===================================================================
     skill_rename_cost: int = Field(
-        default=30,
+        default=5,
         description="技能改名消耗的银币"
     )
     skill_unlock_levels: List[int] = Field(
         default=[10, 30, 60],
         description="宠物技能解锁等级"
     )
-    # 每个解锁档位可习得的技能ID列表
-    skill_unlock_map: Dict[int, List[int]] = Field(
-        default={
-            10: [1, 5, 9],
-            30: [2, 3, 4, 6, 7, 8],
-            60: [2, 3, 4, 6, 7, 8],
-        },
-        description="技能解锁映射 {等级: [技能ID列表]}"
-    )
+    # 每种宠物类型各自有自己的3个技能，定义在 PetTypeConfig.skills 中
     skills: Dict[int, SkillConfig] = Field(
         default={
             1: SkillConfig(
@@ -398,9 +406,9 @@ class Config(BaseModel):
             ),
             5: SkillConfig(
                 id=5, name="强力击", skill_type="power_strike",
-                description="造成3倍攻击力的物理伤害",
+                description="造成2倍攻击力的物理伤害",
                 trigger_prob=0.15,
-                params={"multiplier": 3.0},
+                params={"multiplier": 2.0},
             ),
             6: SkillConfig(
                 id=6, name="真实伤害", skill_type="true_strike",
@@ -425,6 +433,12 @@ class Config(BaseModel):
                 description="造成3倍法伤的法术伤害",
                 trigger_prob=0.15,
                 params={"multiplier": 3.0},
+            ),
+            10: SkillConfig(
+                id=10, name="法穿", skill_type="debuff_magic_def",
+                description="降低对方50%法抗，持续2回合",
+                trigger_prob=0.20,
+                params={"ratio": 0.5, "duration": 2},
             ),
         },
         description="所有技能定义"
@@ -459,7 +473,7 @@ class Config(BaseModel):
                               description="饱腹度+40", effect={"fullness": 40}),
             2: ShopItemConfig(id=2, name="玩具球", price=20,
                               description="心情+50", effect={"mood": 50}),
-            3: ShopItemConfig(id=3, name="经验药水", price=50,
+            3: ShopItemConfig(id=3, name="经验药水", price=30,
                               description="经验+100", effect={"exp": 100}),
             4: ShopItemConfig(id=4, name="复活药水", price=100,
                               description="心情+100，饱腹+100",

@@ -38,9 +38,9 @@ def text_to_image(text):
         text_width = font.getlength(text)  # 获取文本宽度
         max_width = max(max_width, text_width)
     
-    # 计算画布尺寸
+    # 计算画布尺寸（底部多加 descent 缓冲，防止 CJK 字体最后一行被截断）
     wa = int(max_width + padding * 2)
-    ha = int(h_total * len(text_list) + margin * (len(text_list) - 1) + padding * 2)
+    ha = int(h_total * len(text_list) + margin * (len(text_list) - 1) + padding * 2 + descent)
     
     # 创建图像
     i = Image.new('RGB', (wa, ha), color=(255, 255, 255))
