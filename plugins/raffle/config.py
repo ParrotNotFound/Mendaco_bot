@@ -44,3 +44,6 @@ class RecordConfig(BaseModel):
     
     # 是否允许重复获得同一首曲目
     allow_duplicates: bool = Field(True, description="是否允许获得重复曲目")
+
+    # 排行榜显示数量
+    rank_limit: int = Field(10, description="收集率排行榜显示人数")

@@ -114,15 +114,15 @@ def load_user_data(user_id: str) -> Dict:
     # 返回默认数据
     return {
         "user_id": user_id,
-        "total_draws": 0,  # 总抽取次数
-        "today_draws": 0,  # 今日抽取次数
-        "last_draw_date": None,  # 上次抽取日期
-        "records": [],  # 拥有的唱片列表
-        "record_stats": {  # 按唯一标识统计
-            "total_unique": 0,  # 唯一唱片数量
-            "by_rarity": {}  # 按稀有度统计的唯一唱片
+        "total_draws": 0,
+        "today_draws": 0,
+        "last_draw_date": None,
+        "records": [],
+        "record_stats": {
+            "total_unique": 0,
+            "by_rarity": {}
         },
-        "total_spent": 0  # 总消费银币
+        "total_spent": 0
     }
 
 def save_user_data(user_id: str, data: Dict) -> bool:
@@ -415,7 +415,7 @@ def update_user_stats_after_draws(user_data: Dict, draw_count: int) -> Dict:
 # 命令处理器
 draw_record = on_command("draw_record", aliases={"draw","pick","抽唱片", "唱片抽取", "单抽"}, priority=5, block=True)
 draw_10 = on_command("draw_10", aliases={"十连", "十连抽", "pick_10", "唱片十连"}, priority=5, block=True)
-draw_50 = on_command("draw_50", aliases={"五十连", "五十连抽", "唱片五十连"}, priority=5, block=True)
+draw_50 = on_command("draw_50", aliases={"五十连", "五十连抽", "pick_50", "唱片五十连"}, priority=5, block=True)
 my_records = on_command("my_records", aliases={"我的唱片", "唱片列表"}, priority=5, block=True)
 record_info = on_command("record_info", aliases={"唱片详情", "查看唱片"}, priority=5, block=True)
 record_stats = on_command("record_stats", aliases={"唱片统计", "唱片信息"}, priority=5, block=True)
@@ -443,6 +443,7 @@ async def handle_draw_record(event: MessageEvent):
     
     # 检查唱片数量限制
     user_data = load_user_data(user_id)
+    user_data["nickname"] = nickname  # 更新昵称用于排行榜显示
     if len(user_data["records"]) >= config.max_records_per_user:
         await draw_record.finish(f"❌ 唱片数量已达上限（{config.max_records_per_user}张）")
     
@@ -483,7 +484,7 @@ async def handle_draw_record(event: MessageEvent):
     else:
         await draw_record.finish(record_name)
 
-@draw_10.handle()
+
 async def _do_multi_draw(event: MessageEvent, draw_count: int, label: str, cmd):
     """共享的多连抽逻辑"""
     user_id = get_user_id(event)
@@ -769,8 +770,17 @@ async def handle_record_rank(event: MessageEvent):
     if not all_rates:
         await record_rank.finish("目前还没有任何人有唱片收藏~")
 
-    limit = min(20, len(all_rates))
+    limit = min(config.rank_limit, len(all_rates))
     top = all_rates[:limit]
+
+    # 从 coin 系统批量获取昵称
+    nicknames: Dict[str, str] = {}
+    for uid, _, _, _ in top:
+        try:
+            _, _, nick = await get_user_info(uid)
+            nicknames[uid] = nick if nick and nick.strip() else f"用户{uid[-4:]}"
+        except Exception:
+            nicknames[uid] = f"用户{uid[-4:]}"
 
     reply_msg = f"📀 收集率排行榜 (总曲库 {total_avail} 种)\n"
     reply_msg += "=" * 25 + "\n"
@@ -778,7 +788,8 @@ async def handle_record_rank(event: MessageEvent):
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     for idx, (uid, collected, total, rate) in enumerate(top, 1):
         medal = medals.get(idx, f"{idx:>2}.")
-        reply_msg += f"{medal} {collected}/{total} ({rate:.2f}%)\n"
+        name = nicknames.get(uid, f"用户{uid[-4:]}")
+        reply_msg += f"{medal} {name}: {collected}/{total} ({rate:.2f}%)\n"
 
     # 查询者自己的排名
     user_id = get_user_id(event)

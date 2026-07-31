@@ -15,7 +15,8 @@ version = on_command('about')
 
 @version.handle()
 async def handle_function(event: Event):
-    msg = '''Mendaco_bot v0.6.2
+    msg = '''Mendaco_bot v0.7 beta
+    新增了GraphWar插件，使用/graphwar_help查看帮助
     宠物系统进行大幅度更新，修复了一些已知问题。使用/pet_help查看帮助
     新增了五十连抽和收集率排行功能，使用/record_help查看帮助'''
     await version.send(msg)
